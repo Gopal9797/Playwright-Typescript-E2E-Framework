@@ -1,0 +1,52 @@
+name: PR Playwright Comment Dispatch
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+  actions: write
+
+jobs:
+  dispatch-pr-playwright:
+    if: ${{ github.event.issue.pull_request != null && contains(github.event.comment.body, 'run-pr-playwright') && (github.event.comment.author_association == 'OWNER' || github.event.comment.author_association == 'MEMBER' || github.event.comment.author_association == 'COLLABORATOR') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch pr-playwright.yml on PR branch ref
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const prNumber = context.payload.issue.number;
+            const { owner, repo } = context.repo;
+            const { data: pr } = await github.rest.pulls.get({
+              owner,
+              repo,
+              pull_number: prNumber,
+            });
+
+            const targetRef = pr.head.ref;
+            if (pr.head.repo.full_name !== `${owner}/${repo}`) {
+              core.setFailed(
+                `PR #${prNumber} comes from fork ${pr.head.repo.full_name}. ` +
+                `Comment dispatch only supports branches in ${owner}/${repo}.`
+              );
+              return;
+            }
+
+            await github.rest.actions.createWorkflowDispatch({
+              owner,
+              repo,
+              workflow_id: 'pr-playwright.yml',
+              ref: targetRef,
+              inputs: {
+                pr_number: String(prNumber),
+                env: 'qa',
+                grep: '',
+                shards: '6',
+              },
+            });
+
+            core.info(`Dispatched pr-playwright.yml for PR #${prNumber} on ref ${targetRef}`);

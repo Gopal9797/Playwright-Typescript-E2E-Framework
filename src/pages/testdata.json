@@ -1,0 +1,68 @@
+[
+  {
+    "contractId": "1011",
+    "customer": "Gilmore Landscape Architecture LLC",
+    "autoRenewal": true,
+    "startDate": "Upon Activation",
+    "netPrice": "2,820.00 USD",
+    "status": "Active",
+    "po": "GopalCheck",
+    "creationDate": "16 Apr 2026"
+  },
+  {
+    "allProducts": [
+      "Catalyst 60",
+      "Catalyst 10",
+      "Catalyst 1",
+      "Catalyst 30",
+      "Trimble Access - GNSS Only General Survey",
+      "Trimble Access - General Survey",
+      "Trimble Business Center Site and Field - AWS Test",
+      "Trimble Business Center Survey and Mapping",
+      "Trimble Business Center Starter",
+      "Trimble X9 Core",
+      "Trimble X9 Premium",
+      "TBC SW Survey Pro Tier",
+      "TBC SW Survey Core Tier",
+      "Trimble Connect Business Premium - Named User Subscription"
+    ]
+  },
+  {
+    "allSku": [
+      "BS-CAT-1M",
+      "BS-CAT-DM",
+      "BS-CAT-PRECISION",
+      "BS-CAT-SM",
+      "BS-TA-GENGNSS",
+      "BS-TA-GENSURV",
+      "BS-TBC-SAF",
+      "BS-TBC-SAM",
+      "BS-TBC-STA",
+      "BS-X9-CFG-080",
+      "BS-X9-CFG-150",
+      "BS-TRM-TBC-SVPRO",
+      "BS-TRM-TBC-SVCORE",
+      "BS-TRM-TBC-PRM",
+      "BS-SB-TCBP"
+    ]
+  },
+  {
+    "promo_test_inactive": "PROMO_TEST_INACTIVE",
+    "promo_test_expiry": "PROMO_TEST_EXPIRY",
+    "promo_catalyst_1": "50OFF_REPO",
+    "promo_catalyst_10": "50OFF_REPO",
+    "promo_catalyst_30": "50OFF_REPO",
+    "promo_catalyst_60": "50OFF_REPO"
+  },
+
+  {
+    "searchby_company": "ABC",
+    "searchby_tid": "kaleb_mccall+abc@trimble.com.test-google-a.com",
+    "searchby_owner_name": "William",
+    "searchby_noncompany": "nothing",
+    "searchby_nontid": "sachin@email.com",
+    "searchby_nonowner_name": "sachin",
+    "clear_btn": "Clear",
+    "noActive": "Test Data"
+  }
+]

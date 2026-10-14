@@ -1,0 +1,296 @@
+name: QA UI Test automation
+on:
+  schedule:
+    # Runs every day at 01:00 UTC
+    - cron: "0 1 * * *"
+  workflow_dispatch:
+env:
+  BPC_ACCOUNT_EMAIL: ${{ secrets.BPC_ACCOUNT_EMAIL }}
+  BPC_ACCOUNT_PASSWORD: ${{ secrets.BPC_ACCOUNT_PASSWORD }}
+  AXP_BPC_ACCOUNT_EMAIL: ${{ secrets.AXP_BPC_ACCOUNT_EMAIL }}
+  AXP_SRM_ACCOUNT_EMAIL: ${{ secrets.AXP_SRM_ACCOUNT_EMAIL }}
+  AXP_UPG_ACCOUNT_EMAIL: ${{ secrets.AXP_UPG_ACCOUNT_EMAIL }}
+  UPG_ACCOUNT_EMAIL: ${{ secrets.UPG_ACCOUNT_EMAIL }}
+  UPG_ACCOUNT_PASSWORD: ${{ secrets.UPG_ACCOUNT_PASSWORD }}
+  TECHNICIAN_EMAIL: ${{ secrets.TECHNICIAN_EMAIL }}
+  TECHNICIAN_PASSWORD: ${{ secrets.TECHNICIAN_PASSWORD }}
+  SUPER_ADMIN_EMAIL: ${{ secrets.SUPER_ADMIN_EMAIL }}
+  SUPER_ADMIN_PASSWORD: ${{ secrets.SUPER_ADMIN_PASSWORD }}
+  SUPPORT_PRIMARY_USER_EMAIL: ${{ secrets.SUPPORT_PRIMARY_USER_EMAIL }}
+  SUPPORT_SECONDARY_USER_EMAIL: ${{ secrets.SUPPORT_SECONDARY_USER_EMAIL }}
+  SUPPORT_TECHNICIAN_USER_EMAIL: ${{ secrets.SUPPORT_TECHNICIAN_USER_EMAIL }}
+  DB_SERVER: ${{ secrets.DB_SERVER }}
+  DB_HOST_DEV: ${{ secrets.DB_HOST_DEV }}
+  DB_HOST_QA: ${{ secrets.DB_HOST_QA }}
+  DB_USER_DEV: ${{ secrets.DB_USER_DEV }}
+  DB_USER_QA: ${{ secrets.DB_USER_QA }}
+jobs:
+  UI-Automation-tests:
+    runs-on: qa-agent-ubuntu
+    timeout-minutes: 60
+    environment: qa
+    steps:
+      - name: Set Start Time
+        id: start_time
+        run: echo "START_TIME=$(date +%s)" >> $GITHUB_ENV
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+      - name: Install dependencies
+        run: npm ci
+      - name: Install Playwright Browsers
+        run: npx playwright install --with-deps
+      - name: Install Google Chrome for Playwright channel
+        run: |
+          wait_for_apt_locks() {
+            local max_wait_seconds=600
+            local waited=0
+
+            while sudo fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || \
+                  sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
+                  sudo fuser /var/cache/apt/archives/lock >/dev/null 2>&1; do
+              if [ "$waited" -ge "$max_wait_seconds" ]; then
+                echo "Timed out waiting for apt/dpkg lock release after ${max_wait_seconds}s."
+                return 1
+              fi
+
+              echo "apt/dpkg lock is busy before Chrome install. Waiting 10s..."
+              sleep 10
+              waited=$((waited + 10))
+            done
+          }
+
+          wait_for_apt_locks
+
+          ATTEMPTS=3
+          for attempt in $(seq 1 "$ATTEMPTS"); do
+            echo "Chrome install attempt ${attempt}/${ATTEMPTS}"
+
+            if npx playwright install chrome; then
+              echo "Google Chrome channel installed successfully for Playwright."
+              exit 0
+            fi
+
+            EXIT_CODE=$?
+            if [ "$attempt" -lt "$ATTEMPTS" ]; then
+              echo "Chrome install failed with exit code ${EXIT_CODE}. Waiting for apt lock and retrying..."
+              wait_for_apt_locks || exit 1
+              sleep 10
+            else
+              echo "Chrome install failed after ${ATTEMPTS} attempts (last exit code: ${EXIT_CODE})."
+              exit "$EXIT_CODE"
+            fi
+          done
+      - name: Ensure Azure CLI is installed
+        run: |
+          if command -v az >/dev/null 2>&1; then
+            echo "Azure CLI already installed."
+            az version --query '"azure-cli"' -o tsv
+            exit 0
+          fi
+
+          echo "Azure CLI not found. Installing..."
+          if ! command -v sudo >/dev/null 2>&1; then
+            echo "sudo is required to install Azure CLI on this runner."
+            exit 1
+          fi
+
+          curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+          az version --query '"azure-cli"' -o tsv
+      - name: Azure Login using Managed Identity
+        run: az login --identity
+      - name: Prepare DB auth token using Managed Identity
+        run: |
+          if [ -n "$DB_ACCESS_TOKEN" ]; then
+            echo "DB access token is already present."
+            exit 0
+          fi
+
+          TOKEN=$(az account get-access-token --resource-type oss-rdbms --query accessToken --output tsv)
+          if [ -z "$TOKEN" ]; then
+            echo "Failed to generate DB access token from managed identity."
+            exit 1
+          fi
+
+          echo "DB_ACCESS_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+          echo "DB access token generated using managed identity."
+      - name: Run Playwright tests
+        run: ENV=qa npm run test-dailysanity
+      - name: Set End Time
+        id: end_time
+        run: echo "END_TIME=$(date +%s)" >> $GITHUB_ENV
+      - name: Parse Playwright Results with JQ
+        id: parse_results
+        if: always()
+        run: |
+          REPORT_FILE="playwright-report/results.json"
+          PASSED=0
+          FAILED_LIST=""
+          FAILED=0
+          SKIPPED=0
+          FLAKY=0
+          TOTAL=0
+
+          if [ -f "$REPORT_FILE" ]; then
+            PASSED=$(jq '.stats.expected' "$REPORT_FILE")
+            FAILED=$(jq '.stats.unexpected' "$REPORT_FILE")
+            SKIPPED=$(jq '.stats.skipped' "$REPORT_FILE")
+            FLAKY=$(jq '.stats.flaky' "$REPORT_FILE")
+            # Build a newline-separated list of failed tests with reasons (title, file, project: first error message), traversing nested suites
+            FAILED_LIST=$(jq -r '
+              [ ..
+                | objects
+                | .specs?[]? as $spec
+                | $spec.tests[]? as $test
+                | select($test.status == "unexpected" or $test.status == "failed")
+                | "- "
+                  + ($spec.title // "Untitled")
+                  + " (" + ($spec.file // "unknown") + ")"
+                  + (if $test.projectName then " [" + $test.projectName + "]" else "" end)
+                  + ": "
+                  + (
+                      [ $test.results[]?.errors[]? | (.message // .value // "") ]
+                      | map( gsub("\\r?\\n"; " ") )
+                      | join(" | ")
+                      | if length > 0 then . else "Reason not available" end
+                    )
+              ]
+              | if length == 0 then "None" else join("\n") end
+            ' "$REPORT_FILE")
+            TOTAL=$(jq '(.stats.expected + .stats.unexpected + .stats.skipped + .stats.flaky)' "$REPORT_FILE")
+            if [ "$TOTAL" -gt 0 ]; then
+              PASS_PERCENTAGE=$(echo "scale=2; ($PASSED * 100) / $TOTAL" | bc)
+            fi
+          else
+            echo "Warning: Playwright JSON report file not found at $REPORT_FILE. Assuming 0 tests."
+          fi
+
+          echo "Total Tests: $TOTAL"
+          echo "Passed Tests: $PASSED"
+          echo "Failed Tests: $FAILED"
+          echo "Skipped Tests: $SKIPPED"
+          echo "Flaky Tests: $FLAKY"
+          echo "Pass Percentage: $PASS_PERCENTAGE%"
+          echo "PLAYWRIGHT_PASSED=$PASSED" >> $GITHUB_ENV
+          echo "PLAYWRIGHT_FAILED=$FAILED" >> $GITHUB_ENV
+          # Export multi-line failed list to environment
+          MAX_CHARS=3500
+          if [ ${#FAILED_LIST} -gt $MAX_CHARS ]; then
+            FAILED_LIST="${FAILED_LIST:0:$MAX_CHARS}\n... (truncated)"
+          fi
+          {
+            echo "PLAYWRIGHT_FAILED_LIST<<EOF"
+            echo "$FAILED_LIST"
+            echo "EOF"
+          } >> $GITHUB_ENV
+          echo "PLAYWRIGHT_SKIPPED=$SKIPPED" >> $GITHUB_ENV
+          echo "PLAYWRIGHT_FLAKY=$FLAKY" >> $GITHUB_ENV
+          echo "PLAYWRIGHT_TOTAL=$TOTAL" >> $GITHUB_ENV
+          echo "PLAYWRIGHT_PASS_PERCENTAGE=$PASS_PERCENTAGE" >> $GITHUB_ENV
+
+          END_TIME=$(date +%s)
+          START_TIME="${{ env.START_TIME }}"
+          if [ -n "$START_TIME" ]; then
+            DURATION=$(( END_TIME - START_TIME ))
+            echo "Test Duration: $DURATION seconds"
+            echo "PLAYWRIGHT_DURATION=$DURATION" >> $GITHUB_ENV
+          else
+            echo "Warning: START_TIME not found for duration calculation."
+            echo "PLAYWRIGHT_DURATION=N/A" >> $GITHUB_ENV
+          fi
+      - name: Display Summary in Workflow Log
+        if: always()
+        run: |
+          echo "--- Playwright Test Summary ---"
+          echo "Total: ${{ env.PLAYWRIGHT_TOTAL }}"
+          echo "Passed: ${{ env.PLAYWRIGHT_PASSED }}"
+          echo "Failed: ${{ env.PLAYWRIGHT_FAILED }}"
+          echo "Flaky: ${{ env.PLAYWRIGHT_FLAKY }}"
+          echo "Skipped: ${{ env.PLAYWRIGHT_SKIPPED }}"
+          echo "Duration: ${{ env.PLAYWRIGHT_DURATION }} seconds"
+      - uses: actions/upload-artifact@v4
+        id: upload_playwright_report
+        if: always()
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 90
+      - name: Notify Google Chat
+        if: always()
+        env:
+          WEBHOOK_URL: ${{ secrets.GOOGLE_CHAT_WEBHOOK_URL }}
+          FAILED_LIST: ${{ env.PLAYWRIGHT_FAILED_LIST }}
+          PASS_PERCENTAGE: ${{ env.PLAYWRIGHT_PASS_PERCENTAGE }}
+        run: |
+          # Set Color and Icon
+          if [ "${{ env.PLAYWRIGHT_FAILED }}" -eq 0 ]; then
+            CARD_TITLE="QA Test Passed"
+            ICON_URL="https://fonts.gstatic.com/s/i/short-term/release/googlesymbols/check_circle/default/48px.svg"
+          else
+            CARD_TITLE="QA Test Failed"
+            ICON_URL="https://fonts.gstatic.com/s/i/short-term/release/googlesymbols/error/default/48px.svg"
+          fi
+
+          # Safe formatting: truncate and remove characters that might break the card
+          CLEAN_FAILED_LIST=$(echo "$FAILED_LIST" | head -c 2500 | tr -d '\000-\031')
+
+          # Generate Payload using String Interpolation \($var)
+          PAYLOAD=$(jq -n \
+            --arg title "$CARD_TITLE" \
+            --arg subtitle "Repo: ${{ github.repository }}" \
+            --arg icon "$ICON_URL" \
+            --arg pass "${{ env.PLAYWRIGHT_PASSED }}" \
+            --arg fail "${{ env.PLAYWRIGHT_FAILED }}" \
+            --arg flaky "${{ env.PLAYWRIGHT_FLAKY }}" \
+            --arg skip "${{ env.PLAYWRIGHT_SKIPPED }}" \
+            --arg pct "$PASS_PERCENTAGE%" \
+            --arg dur "${{ env.PLAYWRIGHT_DURATION }}s" \
+            --arg logs "$CLEAN_FAILED_LIST" \
+            --arg run_url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            '{
+              cardsV2: [{
+                cardId: "test_report",
+                card: {
+                  header: {
+                    title: $title,
+                    subtitle: $subtitle,
+                    imageUrl: $icon,
+                    imageType: "CIRCLE"
+                  },
+                  sections: [
+                    {
+                      header: "Statistics",
+                      widgets: [
+                        { textParagraph: { text: "<b>Pass Rate:</b> \($pct) | <b>Duration:</b> \($dur)" } },
+                        { textParagraph: { text: "🟢 <b>Passed:</b> \($pass)  🔴 <b>Failed:</b> \($fail)  ⚠️ <b>Flaky:</b> \($flaky)" } }
+                      ]
+                    },
+                    {
+                      header: "Failure Details",
+                      collapsible: true,
+                      uncollapsibleWidgetsCount: 0,
+                      widgets: [
+                        { textParagraph: { text: (if ($fail | tonumber) == 0 then "All tests passed successfully!" else $logs end) } }
+                      ]
+                    },
+                    {
+                      widgets: [
+                        {
+                          buttonList: {
+                            buttons: [
+                              {
+                                text: "OPEN WORKFLOW",
+                                onClick: { openLink: { url: $run_url } }
+                              }
+                            ]
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }]
+            }')
+
+          curl -X POST -H 'Content-Type: application/json' -d "$PAYLOAD" "$WEBHOOK_URL"

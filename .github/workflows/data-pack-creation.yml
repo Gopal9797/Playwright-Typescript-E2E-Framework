@@ -1,0 +1,269 @@
+name: Data Pack Pipeline (Creation → Activation)
+on:
+  schedule:
+    - cron: "30 2 * * *"
+  workflow_dispatch:
+    inputs:
+      target_env:
+        description: "Environment to run"
+        required: true
+        type: choice
+        default: both
+        options:
+          - qa
+          - dev
+          - both
+env:
+  AXP_GLOBAL_EMAIL: ${{ secrets.AXP_GLOBAL_EMAIL }}
+  AXP_GLOBAL_PASSWORD: ${{ secrets.AXP_GLOBAL_PASSWORD }}
+  UPG_ACCOUNT_EMAIL: ${{ secrets.UPG_ACCOUNT_EMAIL }}
+  UPG_ACCOUNT_PASSWORD: ${{ secrets.UPG_ACCOUNT_PASSWORD }}
+  DB_SERVER: ${{ secrets.DB_SERVER }}
+  DB_HOST_DEV: ${{ secrets.DB_HOST_DEV }}
+  DB_HOST_QA: ${{ secrets.DB_HOST_QA }}
+  DB_USER_DEV: ${{ secrets.DB_USER_DEV }}
+  DB_USER_QA: ${{ secrets.DB_USER_QA }}
+  AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+  AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+  AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+jobs:
+  resolve_target_envs:
+    runs-on: ubuntu-latest
+    outputs:
+      target_envs: ${{ steps.set_target_envs.outputs.target_envs }}
+    steps:
+      - name: Resolve target environments
+        id: set_target_envs
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "schedule" ]]; then
+            echo 'target_envs=["qa","dev"]' >> "$GITHUB_OUTPUT"
+          else
+            case "${{ github.event.inputs.target_env }}" in
+              qa)
+                echo 'target_envs=["qa"]' >> "$GITHUB_OUTPUT"
+                ;;
+              dev)
+                echo 'target_envs=["dev"]' >> "$GITHUB_OUTPUT"
+                ;;
+              both)
+                echo 'target_envs=["qa","dev"]' >> "$GITHUB_OUTPUT"
+                ;;
+              *)
+                echo 'target_envs=["qa"]' >> "$GITHUB_OUTPUT"
+                ;;
+            esac
+          fi
+
+  ####################################################
+  # 1️⃣ CONTRACT CREATION JOB
+  ####################################################
+  creation:
+    needs: resolve_target_envs
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    environment: qa
+    strategy:
+      fail-fast: false
+      matrix:
+        target_env: ${{ fromJson(needs.resolve_target_envs.outputs.target_envs) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-playwright-
+
+      - name: Install Playwright Browsers
+        run: |
+          wait_for_apt_locks() {
+            local max_wait_seconds=600
+            local waited=0
+
+            while sudo fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || \
+                  sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
+                  sudo fuser /var/cache/apt/archives/lock >/dev/null 2>&1; do
+              if [ "$waited" -ge "$max_wait_seconds" ]; then
+                echo "Timed out waiting for apt/dpkg lock release after ${max_wait_seconds}s."
+                return 1
+              fi
+
+              echo "apt/dpkg lock is busy. Waiting 10s..."
+              sleep 10
+              waited=$((waited + 10))
+            done
+          }
+
+          wait_for_apt_locks
+
+          ATTEMPTS=3
+          for attempt in $(seq 1 "$ATTEMPTS"); do
+            echo "Playwright browser install attempt ${attempt}/${ATTEMPTS}"
+
+            if npx playwright install --with-deps; then
+              echo "Playwright browsers and OS dependencies installed successfully."
+              exit 0
+            fi
+
+            EXIT_CODE=$?
+            if [ "$attempt" -lt "$ATTEMPTS" ]; then
+              echo "Install failed with exit code ${EXIT_CODE}. Waiting for apt lock and retrying..."
+              wait_for_apt_locks || exit 1
+              sleep 10
+            else
+              echo "Playwright install failed after ${ATTEMPTS} attempts (last exit code: ${EXIT_CODE})."
+              exit "$EXIT_CODE"
+            fi
+          done
+
+      - name: Run Playwright tests (Contract Creation)
+        run: ENV=${{ matrix.target_env }} npm run test-data-pack-creation
+        continue-on-error: true
+
+      - name: Debug .auth
+        if: always()
+        run: |
+          echo "Searching for .auth folders..."
+          find . -type d -name ".auth"
+          echo "Searching for contract text files..."
+          find . -name "dataPack_contracts_*.txt"
+      # ⭐⭐ KEY STEP — Upload generated contract GUID text files
+      - name: Upload contract GUID files
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: contract-guid-files-${{ matrix.target_env }}
+          path: .auth/*.txt
+          include-hidden-files: true
+          retention-days: 1
+
+      - name: Upload Playwright Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dp-creation-playwright-report-${{ matrix.target_env }}
+          path: playwright-report/
+          retention-days: 90
+
+  ####################################################
+  # ⏳ 30-MINUTE DELAY BEFORE ACTIVATION
+  ####################################################
+  wait_for_pending_activation:
+    runs-on: ubuntu-latest
+    needs: [resolve_target_envs, creation]
+    if: always()
+    strategy:
+      fail-fast: false
+      matrix:
+        target_env: ${{ fromJson(needs.resolve_target_envs.outputs.target_envs) }}
+    steps:
+      - name: Wait 30 minutes
+        run: sleep 1800 # 30 min = 1800 seconds
+
+  ####################################################
+  # 2️⃣ CONTRACT ACTIVATION JOB
+  ####################################################
+  activation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    environment: qa
+    needs: [resolve_target_envs, wait_for_pending_activation]
+    if: always() # ⭐ Still runs even if Creation FAILED
+    strategy:
+      fail-fast: false
+      matrix:
+        target_env: ${{ fromJson(needs.resolve_target_envs.outputs.target_envs) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      # ⭐ Download artifacts created even when Creation failed
+      - name: Download contract GUID files
+        uses: actions/download-artifact@v4
+        with:
+          name: contract-guid-files-${{ matrix.target_env }}
+          path: .auth
+
+      - name: Verify
+        run: ls -R .auth
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-playwright-
+
+      - name: Install Playwright Browsers
+        run: |
+          wait_for_apt_locks() {
+            local max_wait_seconds=600
+            local waited=0
+
+            while sudo fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || \
+                  sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
+                  sudo fuser /var/cache/apt/archives/lock >/dev/null 2>&1; do
+              if [ "$waited" -ge "$max_wait_seconds" ]; then
+                echo "Timed out waiting for apt/dpkg lock release after ${max_wait_seconds}s."
+                return 1
+              fi
+
+              echo "apt/dpkg lock is busy. Waiting 10s..."
+              sleep 10
+              waited=$((waited + 10))
+            done
+          }
+
+          wait_for_apt_locks
+
+          ATTEMPTS=3
+          for attempt in $(seq 1 "$ATTEMPTS"); do
+            echo "Playwright browser install attempt ${attempt}/${ATTEMPTS}"
+
+            if npx playwright install --with-deps; then
+              echo "Playwright browsers and OS dependencies installed successfully."
+              exit 0
+            fi
+
+            EXIT_CODE=$?
+            if [ "$attempt" -lt "$ATTEMPTS" ]; then
+              echo "Install failed with exit code ${EXIT_CODE}. Waiting for apt lock and retrying..."
+              wait_for_apt_locks || exit 1
+              sleep 10
+            else
+              echo "Playwright install failed after ${ATTEMPTS} attempts (last exit code: ${EXIT_CODE})."
+              exit "$EXIT_CODE"
+            fi
+          done
+
+      - name: Run Playwright tests (Activation)
+        run: ENV=${{ matrix.target_env }} npm run test-data-pack-axp-activation
+
+      - name: Upload Activation Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dp-activation-playwright-report-${{ matrix.target_env }}
+          path: playwright-report/
+          retention-days: 90

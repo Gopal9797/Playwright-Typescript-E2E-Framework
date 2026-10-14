@@ -1,0 +1,792 @@
+name: PR Playwright Tests
+on:
+  # Manual-only execution for merge-readiness checks.
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "Optional PR number to post/update summary comment"
+        required: false
+        default: ""
+      env:
+        description: "Target environment (qa/stage/prod)"
+        required: false
+        default: "qa"
+      grep:
+        description: "Optional Playwright grep pattern (@tag or test title regex)"
+        required: false
+        default: ""
+      shards:
+        description: "Number of shards to run in parallel (1-6)"
+        required: false
+        default: "6"
+        type: choice
+        options:
+          - "1"
+          - "2"
+          - "3"
+          - "4"
+          - "5"
+          - "6"
+concurrency:
+  # For manual runs, prefer provided PR number so reruns replace in-flight runs for the same PR.
+  group: pr-tests-${{ github.event.inputs.pr_number || github.ref_name || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  ENV: qa
+  PW_SHARD_GLOBAL_TIMEOUT_MS: "9000000"
+
+jobs:
+  playwright-shards:
+    permissions:
+      contents: read
+    name: Run Playwright Shard ${{ matrix.shard }}/${{ github.event.inputs.shards || '6' }}
+    runs-on: qa-agent-ubuntu
+    timeout-minutes: 180
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    environment: qa
+    env:
+      BPC_ACCOUNT_EMAIL: ${{ secrets.BPC_ACCOUNT_EMAIL }}
+      BPC_ACCOUNT_PASSWORD: ${{ secrets.BPC_ACCOUNT_PASSWORD }}
+      AXP_BPC_ACCOUNT_EMAIL: ${{ secrets.AXP_BPC_ACCOUNT_EMAIL }}
+      AXP_SRM_ACCOUNT_EMAIL: ${{ secrets.AXP_SRM_ACCOUNT_EMAIL }}
+      AXP_UPG_ACCOUNT_EMAIL: ${{ secrets.AXP_UPG_ACCOUNT_EMAIL }}
+      AXP_GLOBAL_EMAIL: ${{ secrets.AXP_GLOBAL_EMAIL }}
+      AXP_GLOBAL_PASSWORD: ${{ secrets.AXP_GLOBAL_PASSWORD }}
+      UPG_ACCOUNT_EMAIL: ${{ secrets.UPG_ACCOUNT_EMAIL }}
+      UPG_ACCOUNT_PASSWORD: ${{ secrets.UPG_ACCOUNT_PASSWORD }}
+      TECHNICIAN_EMAIL: ${{ secrets.TECHNICIAN_EMAIL }}
+      TECHNICIAN_PASSWORD: ${{ secrets.TECHNICIAN_PASSWORD }}
+      SUPER_ADMIN_EMAIL: ${{ secrets.SUPER_ADMIN_EMAIL }}
+      SUPER_ADMIN_PASSWORD: ${{ secrets.SUPER_ADMIN_PASSWORD }}
+      SUPPORT_PRIMARY_USER_EMAIL: ${{ secrets.SUPPORT_PRIMARY_USER_EMAIL }}
+      SUPPORT_SECONDARY_USER_EMAIL: ${{ secrets.SUPPORT_SECONDARY_USER_EMAIL }}
+      SUPPORT_TECHNICIAN_USER_EMAIL: ${{ secrets.SUPPORT_TECHNICIAN_USER_EMAIL }}
+      DB_SERVER: ${{ secrets.DB_SERVER }}
+      DB_HOST_DEV: ${{ secrets.DB_HOST_DEV }}
+      DB_HOST_QA: ${{ secrets.DB_HOST_QA }}
+      DB_USER_DEV: ${{ secrets.DB_USER_DEV }}
+      DB_USER_QA: ${{ secrets.DB_USER_QA }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
+    steps:
+      - name: Skip shard outside selected range
+        if: ${{ matrix.shard > fromJSON(github.event.inputs.shards || '6') }}
+        run: echo "Skipping shard ${{ matrix.shard }} because selected shard count is ${{ github.event.inputs.shards || '6' }}"
+
+      - name: Checkout
+        if: ${{ matrix.shard <= fromJSON(github.event.inputs.shards || '6') }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.pr_number != '' && format('refs/pull/{0}/head', github.event.inputs.pr_number) || github.ref }}
+
+      - name: Setup Node
+        if: ${{ matrix.shard <= fromJSON(github.event.inputs.shards || '6') }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: "npm"
+
+      - name: Install Dependencies
+        if: ${{ matrix.shard <= fromJSON(github.event.inputs.shards || '6') }}
+        run: npm ci
+
+      - name: Install Playwright Browsers
+        if: ${{ matrix.shard <= fromJSON(github.event.inputs.shards || '6') }}
+        run: |
+          wait_for_apt_locks() {
+            local max_wait_seconds=600
+            local waited=0
+
+            while sudo fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || \
+                  sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
+                  sudo fuser /var/cache/apt/archives/lock >/dev/null 2>&1; do
+              if [ "$waited" -ge "$max_wait_seconds" ]; then
+                echo "Timed out waiting for apt/dpkg lock release after ${max_wait_seconds}s."
+                return 1
+              fi
+
+              echo "apt/dpkg lock is busy. Waiting 10s..."
+              sleep 10
+              waited=$((waited + 10))
+            done
+          }
+
+          wait_for_apt_locks
+
+          ATTEMPTS=3
+          for attempt in $(seq 1 "$ATTEMPTS"); do
+            echo "Playwright browser install attempt ${attempt}/${ATTEMPTS}"
+
+            if npx playwright install --with-deps; then
+              echo "Playwright browsers and OS dependencies installed successfully."
+              exit 0
+            fi
+
+            EXIT_CODE=$?
+            if [ "$attempt" -lt "$ATTEMPTS" ]; then
+              echo "Install failed with exit code ${EXIT_CODE}. Waiting for apt lock and retrying..."
+              wait_for_apt_locks || exit 1
+              sleep 10
+            else
+              echo "Playwright install failed after ${ATTEMPTS} attempts (last exit code: ${EXIT_CODE})."
+              exit "$EXIT_CODE"
+            fi
+          done
+
+      - name: Install Google Chrome for Playwright channel
+        if: ${{ matrix.shard <= fromJSON(github.event.inputs.shards || '6') }}
+        run: |
+          wait_for_apt_locks() {
+            local max_wait_seconds=600
+            local waited=0
+
+            while sudo fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || \
+                  sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
+                  sudo fuser /var/cache/apt/archives/lock >/dev/null 2>&1; do
+              if [ "$waited" -ge "$max_wait_seconds" ]; then
+                echo "Timed out waiting for apt/dpkg lock release before Chrome install after ${max_wait_seconds}s."
+                return 1
+              fi
+
+              echo "apt/dpkg lock is busy before Chrome install. Waiting 10s..."
+              sleep 10
+              waited=$((waited + 10))
+            done
+          }
+
+          wait_for_apt_locks
+
+          ATTEMPTS=3
+          for attempt in $(seq 1 "$ATTEMPTS"); do
+            echo "Chrome install attempt ${attempt}/${ATTEMPTS}"
+
+            if npx playwright install chrome; then
+              echo "Google Chrome channel installed successfully for Playwright."
+              exit 0
+            fi
+
+            EXIT_CODE=$?
+            if [ "$attempt" -lt "$ATTEMPTS" ]; then
+              echo "Chrome install failed with exit code ${EXIT_CODE}. Waiting for apt lock and retrying..."
+              wait_for_apt_locks || exit 1
+              sleep 10
+            else
+              echo "Chrome install failed after ${ATTEMPTS} attempts (last exit code: ${EXIT_CODE})."
+              exit "$EXIT_CODE"
+            fi
+          done
+
+      - name: Ensure Azure CLI is installed
+        if: ${{ matrix.shard <= fromJSON(github.event.inputs.shards || '6') }}
+        run: |
+          if command -v az >/dev/null 2>&1; then
+            echo "Azure CLI already installed."
+            az version --query '"azure-cli"' -o tsv
+            exit 0
+          fi
+
+          echo "Azure CLI not found. Installing..."
+          if ! command -v sudo >/dev/null 2>&1; then
+            echo "sudo is required to install Azure CLI on this runner."
+            exit 1
+          fi
+
+          curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+          az version --query '"azure-cli"' -o tsv
+
+      - name: Azure Login using Managed Identity
+        if: ${{ matrix.shard <= fromJSON(github.event.inputs.shards || '6') }}
+        run: az login --identity
+
+      - name: Prepare DB auth token using Managed Identity
+        if: ${{ matrix.shard <= fromJSON(github.event.inputs.shards || '6') }}
+        run: |
+          if [ -n "$DB_ACCESS_TOKEN" ]; then
+            echo "DB access token is already present."
+            exit 0
+          fi
+
+          TOKEN=$(az account get-access-token --resource-type oss-rdbms --query accessToken --output tsv)
+          if [ -z "$TOKEN" ]; then
+            echo "Failed to generate DB access token from managed identity."
+            exit 1
+          fi
+
+          echo "DB_ACCESS_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+          echo "DB access token generated for this shard using managed identity."
+
+      - name: Debug Secrets Presence (non-sensitive)
+        if: ${{ matrix.shard == 1 && matrix.shard <= fromJSON(github.event.inputs.shards || '6') }}
+        run: |
+          echo "Checking required secret variables presence (will not print actual values)";
+          for var in DB_ACCESS_TOKEN DB_HOST_QA DB_USER_QA DB_SERVER TWO_ACCOUNTS_EMAIL ZERO_ACCOUNTS_EMAIL AXP_GLOBAL_EMAIL AXP_GLOBAL_PASSWORD; do
+            if [ -n "${!var}" ]; then
+              echo "$var=SET";
+            else
+              echo "$var=MISSING";
+            fi
+          done
+          echo "Event: $GITHUB_EVENT_NAME"
+
+      - name: Run Playwright Shard
+        if: ${{ matrix.shard <= fromJSON(github.event.inputs.shards || '6') }}
+        id: run_tests
+        env:
+          # Override ENV for workflow_dispatch if provided; otherwise keep global default
+          ENV: ${{ github.event.inputs.env || env.ENV }}
+          PW_GREP: ${{ github.event.inputs.grep }}
+          SHARD_TOTAL: ${{ github.event.inputs.shards || '6' }}
+        run: |
+          set +e
+          GLOBAL_TIMEOUT_MS="${PW_SHARD_GLOBAL_TIMEOUT_MS:-9000000}"
+          echo "Starting Playwright shard execution (will always continue for merge and summary)..."
+          echo "Event: $GITHUB_EVENT_NAME"
+          echo "ENV passed: $ENV"
+          echo "Shard: ${{ matrix.shard }}/$SHARD_TOTAL"
+          echo "Playwright global timeout (ms): $GLOBAL_TIMEOUT_MS"
+
+          if [ -n "$PW_GREP" ]; then
+            echo "Applying grep filter: $PW_GREP"
+            ENV="$ENV" npx playwright test -g "$PW_GREP" --shard=${{ matrix.shard }}/$SHARD_TOTAL --reporter=blob --global-timeout="$GLOBAL_TIMEOUT_MS"
+            TEST_EXIT=$?
+          else
+            ENV="$ENV" npm run test-dxp-ui -- --shard=${{ matrix.shard }}/$SHARD_TOTAL --reporter=blob --global-timeout="$GLOBAL_TIMEOUT_MS"
+            TEST_EXIT=$?
+          fi
+
+          echo "exit_code=$TEST_EXIT" >> $GITHUB_OUTPUT
+          exit 0
+
+      - name: Upload Shard Blob Report
+        if: ${{ always() && matrix.shard <= fromJSON(github.event.inputs.shards || '6') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-blob-report-${{ matrix.shard }}
+          path: blob-report/
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Fail shard if tests failed
+        if: ${{ always() && matrix.shard <= fromJSON(github.event.inputs.shards || '6') && steps.run_tests.outputs.exit_code != '0' }}
+        run: |
+          echo "Shard ${{ matrix.shard }} failed with exit code ${{ steps.run_tests.outputs.exit_code }}"
+          exit 1
+
+  merge-and-report:
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    name: Merge Reports and Publish Summary
+    runs-on: qa-agent-ubuntu
+    timeout-minutes: 120
+    needs: playwright-shards
+    if: ${{ always() && (needs.playwright-shards.result == 'success' || needs.playwright-shards.result == 'failure') }}
+    environment: qa
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.pr_number != '' && format('refs/pull/{0}/head', github.event.inputs.pr_number) || github.ref }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: "npm"
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Download Shard Blob Reports
+        if: always()
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: playwright-blob-report-*
+          path: all-blob-reports
+
+      - name: Merge shard reports
+        id: merge_reports
+        if: always()
+        run: |
+          EXPECTED_SHARDS="${{ github.event.inputs.shards || '6' }}"
+          mkdir -p merged-blob-input
+          SHARD_FILES=0
+
+          while IFS= read -r ZIP_FILE; do
+            SHARD_FILES=$((SHARD_FILES + 1))
+            cp "$ZIP_FILE" "merged-blob-input/shard-${SHARD_FILES}-$(basename "$ZIP_FILE")"
+          done < <(find all-blob-reports -type f -name '*.zip' | sort)
+
+          FOUND_SHARDS="$SHARD_FILES"
+          echo "shards_expected=$EXPECTED_SHARDS" >> $GITHUB_OUTPUT
+          echo "shards_found=$FOUND_SHARDS" >> $GITHUB_OUTPUT
+
+          if [ "$FOUND_SHARDS" -lt "$EXPECTED_SHARDS" ]; then
+            echo "shard_missing=1" >> $GITHUB_OUTPUT
+            echo "Warning: expected $EXPECTED_SHARDS shard reports, found $FOUND_SHARDS"
+          else
+            echo "shard_missing=0" >> $GITHUB_OUTPUT
+          fi
+
+          if [ "$FOUND_SHARDS" -eq 0 ]; then
+            echo "No shard reports found. Creating fallback results file."
+            mkdir -p playwright-report
+            echo '{"stats":{"expected":0,"unexpected":1,"skipped":0,"flaky":0},"suites":[]}' > playwright-report/results.json
+            exit 0
+          fi
+
+          mkdir -p playwright-report
+
+          # Generate HTML report artifact for PR download/viewing.
+          npx playwright merge-reports --config=playwright.merge.config.ts --reporter=html merged-blob-input
+
+          # Generate machine-readable JSON summary after HTML generation.
+          npx playwright merge-reports --config=playwright.merge.config.ts --reporter=json merged-blob-input > playwright-report/results.json
+
+          if [ ! -s playwright-report/results.json ] || ! jq empty playwright-report/results.json >/dev/null 2>&1; then
+            echo "Warning: merged results.json is empty or invalid. Removing file to enable fallback aggregation."
+            rm -f playwright-report/results.json
+          fi
+
+      - name: Estimate Planned Test Count
+        if: always()
+        id: planned_tests
+        env:
+          ENV: ${{ github.event.inputs.env || env.ENV }}
+          PW_GREP: ${{ github.event.inputs.grep }}
+        run: |
+          PLANNED_TOTAL=0
+
+          if [ -n "$PW_GREP" ]; then
+            ENV="$ENV" npx playwright test -g "$PW_GREP" --list --reporter=line > planned-tests-list.txt 2>&1 || true
+          else
+            ENV="$ENV" npx playwright test --config=playwright.config.ts --project=uiTests --project=customerInitiatedAmendments --no-deps --list --reporter=line > planned-tests-list.txt 2>&1 || true
+          fi
+
+          TOTAL_LINE=$(grep -E 'Total:[[:space:]]+[0-9]+ tests' planned-tests-list.txt | tail -n 1 || true)
+          if [ -n "$TOTAL_LINE" ]; then
+            PLANNED_TOTAL=$(echo "$TOTAL_LINE" | sed -E 's/.*Total:[[:space:]]+([0-9]+) tests.*/\1/')
+          else
+            echo "Warning: Unable to parse planned test count from Playwright --list output."
+          fi
+
+          echo "planned_total=$PLANNED_TOTAL" >> $GITHUB_OUTPUT
+
+      - name: Capture JSON Summary Vars
+        if: always()
+        id: summary
+        run: |
+          REPORT=playwright-report/results.json
+          PLANNED_TOTAL="${{ steps.planned_tests.outputs.planned_total || '0' }}"
+          REPORT_MISSING=0
+          PARTIAL_COUNTS=0
+          NOT_RUN=0
+          if [ -s "$REPORT" ] && jq empty "$REPORT" >/dev/null 2>&1; then
+            PASSED=$(jq '.stats.expected // 0' "$REPORT")
+            FAILED=$(jq '.stats.unexpected // 0' "$REPORT")
+            SKIPPED=$(jq '.stats.skipped // 0' "$REPORT")
+            FLAKY=$(jq '.stats.flaky // 0' "$REPORT")
+            TOTAL=$(jq '((.stats.expected // 0) + (.stats.unexpected // 0) + (.stats.skipped // 0) + (.stats.flaky // 0))' "$REPORT")
+            PASS_PCT=0
+            if [ "$TOTAL" -gt 0 ]; then
+              PASS_PCT=$(echo "scale=2; ($PASSED * 100) / $TOTAL" | bc)
+            fi
+          else
+            PASSED=0; FAILED=0; SKIPPED=0; FLAKY=0; TOTAL=0; PASS_PCT=0; REPORT_MISSING=1;
+            echo "Merged JSON report missing or invalid. Attempting best-effort aggregation from available shard blobs."
+
+            while IFS= read -r ZIP_FILE; do
+              rm -rf partial-blob-input
+              mkdir -p partial-blob-input
+              cp "$ZIP_FILE" "partial-blob-input/$(basename "$ZIP_FILE")"
+
+              if npx playwright merge-reports --config=playwright.merge.config.ts --reporter=json partial-blob-input > partial-results.json && [ -s partial-results.json ] && jq empty partial-results.json >/dev/null 2>&1; then
+                P=$(jq '.stats.expected // 0' partial-results.json)
+                F=$(jq '.stats.unexpected // 0' partial-results.json)
+                S=$(jq '.stats.skipped // 0' partial-results.json)
+                FL=$(jq '.stats.flaky // 0' partial-results.json)
+
+                PASSED=$((PASSED + P))
+                FAILED=$((FAILED + F))
+                SKIPPED=$((SKIPPED + S))
+                FLAKY=$((FLAKY + FL))
+                PARTIAL_COUNTS=1
+              else
+                echo "Warning: unable to parse shard blob $(basename "$ZIP_FILE") for fallback summary."
+              fi
+            done < <(find merged-blob-input -type f -name '*.zip' | sort)
+
+            if [ "$PARTIAL_COUNTS" -eq 1 ]; then
+              TOTAL=$((PASSED + FAILED + SKIPPED + FLAKY))
+              if [ "$TOTAL" -gt 0 ]; then
+                PASS_PCT=$(echo "scale=2; ($PASSED * 100) / $TOTAL" | bc)
+              fi
+              REPORT_MISSING=0
+            else
+              FAILED=1
+            fi
+          fi
+
+          if [[ "$PLANNED_TOTAL" =~ ^[0-9]+$ ]] && [ "$PLANNED_TOTAL" -gt "$TOTAL" ]; then
+            NOT_RUN=$((PLANNED_TOTAL - TOTAL))
+          fi
+
+          echo "passed=$PASSED" >> $GITHUB_OUTPUT
+          echo "failed=$FAILED" >> $GITHUB_OUTPUT
+          echo "skipped=$SKIPPED" >> $GITHUB_OUTPUT
+          echo "flaky=$FLAKY" >> $GITHUB_OUTPUT
+          echo "total=$TOTAL" >> $GITHUB_OUTPUT
+          echo "pass_pct=$PASS_PCT" >> $GITHUB_OUTPUT
+          echo "planned_total=$PLANNED_TOTAL" >> $GITHUB_OUTPUT
+          echo "not_run=$NOT_RUN" >> $GITHUB_OUTPUT
+          echo "report_missing=$REPORT_MISSING" >> $GITHUB_OUTPUT
+          echo "partial_counts=$PARTIAL_COUNTS" >> $GITHUB_OUTPUT
+          echo "shards_found=${{ steps.merge_reports.outputs.shards_found || '0' }}" >> $GITHUB_OUTPUT
+          echo "shards_expected=${{ steps.merge_reports.outputs.shards_expected || (github.event.inputs.shards || '6') }}" >> $GITHUB_OUTPUT
+          echo "shard_missing=${{ steps.merge_reports.outputs.shard_missing || '1' }}" >> $GITHUB_OUTPUT
+
+      - name: Capture Slowest Tests
+        if: always()
+        id: slow_tests
+        run: |
+          REPORT=playwright-report/results.json
+          if [ ! -s "$REPORT" ] || ! jq empty "$REPORT" >/dev/null 2>&1; then
+            {
+              echo "slow_tests_md<<EOF"
+              echo "### Slowest Tests (Top 10)"
+              echo "No valid merged report available."
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          node <<'NODE'
+          const fs = require('fs');
+
+          const reportPath = 'playwright-report/results.json';
+          const data = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
+          const rows = [];
+
+          function clean(value) {
+            return String(value || '')
+              .replace(/\|/g, '\\|')
+              .replace(/\r?\n/g, ' ')
+              .trim();
+          }
+
+          function collectFromSuite(suite) {
+            for (const spec of suite.specs || []) {
+              for (const test of spec.tests || []) {
+                const durationMs = (test.results || []).reduce((sum, result) => sum + (result.duration || 0), 0);
+                rows.push({
+                  durationMs,
+                  project: clean(test.projectName || test.projectId || 'unknown'),
+                  file: clean(spec.file || suite.file || ''),
+                  title: clean(spec.title || 'Unnamed test')
+                });
+              }
+            }
+
+            for (const childSuite of suite.suites || []) {
+              collectFromSuite(childSuite);
+            }
+          }
+
+          for (const topSuite of data.suites || []) {
+            collectFromSuite(topSuite);
+          }
+
+          rows.sort((a, b) => b.durationMs - a.durationMs);
+          const top = rows.slice(0, 10);
+
+          let markdown = '### Slowest Tests (Top 10)\n';
+          markdown += '| Duration | Project | File | Test |\n';
+          markdown += '|---:|---|---|---|\n';
+
+          if (top.length === 0) {
+            markdown += '| n/a | n/a | n/a | No tests found in merged report |\n';
+          } else {
+            for (const row of top) {
+              const seconds = (row.durationMs / 1000).toFixed(1);
+              markdown += `| ${seconds}s | ${row.project} | ${row.file} | ${row.title} |\n`;
+            }
+          }
+
+          fs.writeFileSync('slow-tests-summary.md', markdown);
+          NODE
+
+          {
+            echo "slow_tests_md<<EOF"
+            cat slow-tests-summary.md
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Upload Playwright Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 30
+
+      - name: Notify Google Chat
+        if: ${{ always() && !cancelled() }}
+        env:
+          WEBHOOK_URL: ${{ secrets.GOOGLE_CHAT_WEBHOOK_URL_REGRESSION }}
+          PW_PASSED: ${{ steps.summary.outputs.passed }}
+          PW_FAILED: ${{ steps.summary.outputs.failed }}
+          PW_SKIPPED: ${{ steps.summary.outputs.skipped }}
+          PW_FLAKY: ${{ steps.summary.outputs.flaky }}
+          PW_TOTAL: ${{ steps.summary.outputs.total }}
+          PW_PASS_PCT: ${{ steps.summary.outputs.pass_pct }}
+          PW_NOT_RUN: ${{ steps.summary.outputs.not_run }}
+          PW_REPORT_MISSING: ${{ steps.summary.outputs.report_missing }}
+          PW_PARTIAL_COUNTS: ${{ steps.summary.outputs.partial_counts }}
+          PW_SHARDS_FOUND: ${{ steps.summary.outputs.shards_found }}
+          PW_SHARDS_EXPECTED: ${{ steps.summary.outputs.shards_expected }}
+          PW_SLOW_TESTS: ${{ steps.slow_tests.outputs.slow_tests_md }}
+        run: |
+          if [ -z "$WEBHOOK_URL" ]; then
+            echo "GOOGLE_CHAT_WEBHOOK_URL_REGRESSION is not set. Skipping notification."
+            exit 0
+          fi
+
+          SKIP_INCL_NOT_RUN=$(( ${PW_SKIPPED:-0} + ${PW_NOT_RUN:-0} ))
+          WARNING_NOTE=""
+          FAIL_COUNT=${PW_FAILED:-0}
+
+          if [ "${PW_REPORT_MISSING:-0}" = "1" ]; then
+            WARNING_NOTE="Merged JSON report missing; counts may be incomplete."
+          elif [ "${PW_PARTIAL_COUNTS:-0}" = "1" ]; then
+            WARNING_NOTE="Full merged report unavailable; counts are best-effort from available shard blobs."
+          fi
+
+          if [ "${PW_NOT_RUN:-0}" -gt 0 ]; then
+            if [ -n "$WARNING_NOTE" ]; then
+              WARNING_NOTE="$WARNING_NOTE Estimated not-run tests: ${PW_NOT_RUN}."
+            else
+              WARNING_NOTE="Estimated not-run tests: ${PW_NOT_RUN}."
+            fi
+          fi
+
+          if [ "${PW_REPORT_MISSING:-0}" = "1" ] || [ "${PW_PARTIAL_COUNTS:-0}" = "1" ] || [ "${PW_NOT_RUN:-0}" -gt 0 ]; then
+            CARD_TITLE="PR Playwright Incomplete"
+            ICON_URL="https://fonts.gstatic.com/s/i/short-term/release/googlesymbols/warning/default/48px.svg"
+          elif [ "$FAIL_COUNT" -eq 0 ]; then
+            CARD_TITLE="PR Playwright Passed"
+            ICON_URL="https://fonts.gstatic.com/s/i/short-term/release/googlesymbols/check_circle/default/48px.svg"
+          else
+            CARD_TITLE="PR Playwright Failed"
+            ICON_URL="https://fonts.gstatic.com/s/i/short-term/release/googlesymbols/error/default/48px.svg"
+          fi
+
+          FAILED_LIST="All tests passed successfully!"
+          if [ "$FAIL_COUNT" -gt 0 ] && [ -s "playwright-report/results.json" ] && jq empty "playwright-report/results.json" >/dev/null 2>&1; then
+            FAILED_LIST=$(jq -r '
+              [ ..
+                | objects
+                | .specs?[]? as $spec
+                | $spec.tests[]? as $test
+                | select($test.status == "unexpected" or $test.status == "failed")
+                | "- "
+                  + ($spec.title // "Untitled")
+                  + " (" + ($spec.file // "unknown") + ")"
+                  + (if $test.projectName then " [" + $test.projectName + "]" else "" end)
+                  + ": "
+                  + (
+                      [ $test.results[]?.errors[]? | (.message // .value // "") ]
+                      | map(gsub("\\r?\\n"; " "))
+                      | join(" | ")
+                      | if length > 0 then . else "Reason not available" end
+                    )
+              ]
+              | if length == 0 then "Failed tests present. Open workflow report for details." else join("\\n") end
+            ' playwright-report/results.json)
+          elif [ "$FAIL_COUNT" -gt 0 ]; then
+            FAILED_LIST="Failed tests present. Merged results.json unavailable or invalid."
+          fi
+
+          CLEAN_FAILED_LIST=$(echo "$FAILED_LIST" | head -c 2500 | tr -d '\000-\031')
+          CLEAN_SLOW_TESTS=$(echo "${PW_SLOW_TESTS:-No slow-test summary available.}" | head -c 1800 | tr -d '\000-\031')
+          SUBTITLE="Repo: ${{ github.repository }} | Event: ${{ github.event_name }} | Ref: ${{ github.head_ref || github.ref_name }}"
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          PAYLOAD=$(jq -n \
+            --arg title "$CARD_TITLE" \
+            --arg subtitle "$SUBTITLE" \
+            --arg icon "$ICON_URL" \
+            --arg pass "${PW_PASSED:-0}" \
+            --arg fail "$FAIL_COUNT" \
+            --arg flaky "${PW_FLAKY:-0}" \
+            --arg skip_total "$SKIP_INCL_NOT_RUN" \
+            --arg shards "${PW_SHARDS_FOUND:-0}/${PW_SHARDS_EXPECTED:-0}" \
+            --arg pct "${PW_PASS_PCT:-0}%" \
+            --arg warn "$WARNING_NOTE" \
+            --arg logs "$CLEAN_FAILED_LIST" \
+            --arg slow "$CLEAN_SLOW_TESTS" \
+            --arg run_url "$RUN_URL" \
+            '{
+              cardsV2: [{
+                cardId: "test_report",
+                card: {
+                  header: {
+                    title: $title,
+                    subtitle: $subtitle,
+                    imageUrl: $icon,
+                    imageType: "CIRCLE"
+                  },
+                  sections: [
+                    {
+                      header: "Statistics",
+                      widgets: [
+                        { textParagraph: { text: "<b>Pass Rate:</b> \($pct)" } },
+                        { textParagraph: { text: "<b>Shards:</b> \($shards)" } },
+                        { textParagraph: { text: "<b>Passed:</b> \($pass) | <b>Failed:</b> \($fail) | <b>Flaky:</b> \($flaky) | <b>Skipped (incl. Not Run):</b> \($skip_total)" } },
+                        { textParagraph: { text: (if $warn == "" then "" else "<b>Notes:</b> " + $warn end) } },
+                        { textParagraph: { text: "<b>Workflow:</b> <a href=\"\($run_url)\">Open workflow</a>" } }
+                      ]
+                    },
+                    {
+                      header: "Failure Details",
+                      collapsible: true,
+                      uncollapsibleWidgetsCount: 0,
+                      widgets: [
+                        { textParagraph: { text: $logs } }
+                      ]
+                    },
+                    {
+                      header: "Slowest Tests",
+                      collapsible: true,
+                      uncollapsibleWidgetsCount: 0,
+                      widgets: [
+                        { textParagraph: { text: $slow } }
+                      ]
+                    },
+                    {
+                      widgets: [
+                        {
+                          buttonList: {
+                            buttons: [
+                              {
+                                text: "OPEN WORKFLOW",
+                                onClick: { openLink: { url: $run_url } }
+                              }
+                            ]
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }]
+            }')
+
+          curl -X POST -H 'Content-Type: application/json' -d "$PAYLOAD" "$WEBHOOK_URL"
+
+      - name: Comment PR with Summary
+        if: ${{ always() && !cancelled() && github.event.inputs.pr_number != '' }}
+        uses: actions/github-script@v7
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.inputs.pr_number }}
+          PW_PASSED: ${{ steps.summary.outputs.passed }}
+          PW_FAILED: ${{ steps.summary.outputs.failed }}
+          PW_SKIPPED: ${{ steps.summary.outputs.skipped }}
+          PW_FLAKY: ${{ steps.summary.outputs.flaky }}
+          PW_TOTAL: ${{ steps.summary.outputs.total }}
+          PW_PASS_PCT: ${{ steps.summary.outputs.pass_pct }}
+          PW_NOT_RUN: ${{ steps.summary.outputs.not_run }}
+          PW_REPORT_MISSING: ${{ steps.summary.outputs.report_missing }}
+          PW_PARTIAL_COUNTS: ${{ steps.summary.outputs.partial_counts }}
+          PW_SHARDS_FOUND: ${{ steps.summary.outputs.shards_found }}
+          PW_SHARDS_EXPECTED: ${{ steps.summary.outputs.shards_expected }}
+          PW_SLOW_TESTS: ${{ steps.slow_tests.outputs.slow_tests_md }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const prNumberRaw = (process.env.PR_NUMBER || '').trim();
+            if (!/^\d+$/.test(prNumberRaw)) {
+              core.setFailed(`Invalid pr_number input: "${prNumberRaw}". Provide a numeric PR number.`);
+              return;
+            }
+            const prNumber = Number(prNumberRaw);
+            const passed = process.env.PW_PASSED || '0';
+            const failed = process.env.PW_FAILED || '0';
+            const skipped = process.env.PW_SKIPPED || '0';
+            const flaky = process.env.PW_FLAKY || '0';
+            const total = process.env.PW_TOTAL || '0';
+            const passPct = process.env.PW_PASS_PCT || '0';
+            const notRun = process.env.PW_NOT_RUN || '0';
+            const reportMissing = process.env.PW_REPORT_MISSING || '0';
+            const partialCounts = process.env.PW_PARTIAL_COUNTS || '0';
+            const shardsFound = process.env.PW_SHARDS_FOUND || '0';
+            const shardsExpected = process.env.PW_SHARDS_EXPECTED || '0';
+            const slowTests = process.env.PW_SLOW_TESTS || '### Slowest Tests (Top 10)\nUnavailable.';
+
+            const skippedNum = Number(skipped) || 0;
+            const notRunNum = Number(notRun) || 0;
+            const skippedWithNotRun = String(skippedNum + notRunNum);
+
+            const reportWarning = reportMissing === '1'
+              ? '\n\n[!] Merged JSON report was not found, so test counts may be incomplete.'
+              : (partialCounts === '1'
+                ? '\n\n[!] Full merged report was unavailable. Counts above are best-effort totals from available shard reports.'
+                : '');
+            const notRunWarning = notRunNum > 0
+              ? `\n\n[!] Estimated not-run tests due to incomplete shard execution: ${notRunNum}.`
+              : '';
+            const body = `### Playwright Test Summary\n| Total | Passed | Failed | Flaky | Skipped (incl. Not Run) | Pass % | Shards |\n|-------|--------|--------|-------|--------------------------|--------|--------|\n| ${total} | ${passed} | ${failed} | ${flaky} | ${skippedWithNotRun} | ${passPct}% | ${shardsFound}/${shardsExpected} |\n\n${slowTests}${reportWarning}${notRunWarning}\n\nArtifacts: Download the 'playwright-report' artifact for full details.`;
+            const { data: comments } = await github.rest.issues.listComments({
+              ...context.repo,
+              issue_number: prNumber,
+            });
+            const marker = '### Playwright Test Summary';
+            const existing = comments.find(c => c.user.type === 'Bot' && c.body.startsWith(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                ...context.repo,
+                comment_id: existing.id,
+                body
+              });
+            } else {
+              await github.rest.issues.createComment({
+                ...context.repo,
+                issue_number: prNumber,
+                body
+              });
+            }
+
+      - name: Fail if shard report is missing
+        if: always() && steps.summary.outputs.shard_missing == '1'
+        run: |
+          echo "One or more shard reports are missing: ${{ steps.summary.outputs.shards_found }}/${{ steps.summary.outputs.shards_expected }}"
+          exit 1
+
+      - name: Fail if merged JSON report is missing
+        if: always() && steps.summary.outputs.report_missing == '1'
+        run: |
+          echo "Merged Playwright JSON report is missing after merge. Unable to compute accurate summary counts."
+          exit 1
+
+      - name: Fail if shard jobs failed before merge
+        if: always() && needs.playwright-shards.result == 'failure' && steps.summary.outputs.total == '0'
+        run: |
+          echo "One or more shard jobs failed before producing merged test results. Check shard job logs."
+          exit 1
+
+      - name: Fail if no tests were executed
+        if: always() && needs.playwright-shards.result == 'success' && steps.summary.outputs.total == '0'
+        run: |
+          echo "No tests were executed after report merge. Failing job."
+          exit 1
+
+      - name: Fail if tests failed
+        if: always() && steps.summary.outputs.failed != '0'
+        run: |
+          echo "Some tests failed (${{ steps.summary.outputs.failed }} failures). Failing job.";
+          exit 1

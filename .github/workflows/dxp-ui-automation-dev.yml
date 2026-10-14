@@ -1,0 +1,58 @@
+name: Run Playwright Dev Tests
+
+on:
+  workflow_dispatch: # Manual trigger only
+
+env:
+  AXP_UPG_ACCOUNT_EMAIL: ${{ secrets.AXP_UPG_ACCOUNT_EMAIL }}
+  UPG_ACCOUNT_EMAIL: ${{ secrets.UPG_ACCOUNT_EMAIL }}
+  UPG_ACCOUNT_PASSWORD: ${{ secrets.UPG_ACCOUNT_PASSWORD }}
+  AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+  AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+  AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+  DB_HOST_DEV: ${{ secrets.DB_HOST_DEV }}
+  DB_HOST_QA: ${{ secrets.DB_HOST_QA }}
+  DB_USER_DEV: ${{ secrets.DB_USER_DEV }}
+  DB_USER_QA: ${{ secrets.DB_USER_QA }}
+permissions:
+  contents: read
+jobs:
+  run-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: qa
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare DB auth token
+        run: |
+          if [ -n "$DB_ACCESS_TOKEN" ]; then
+            echo "DB access token is already present."
+            exit 0
+          fi
+
+          if [ -z "$AZURE_CLIENT_ID" ] || [ -z "$AZURE_CLIENT_SECRET" ] || [ -z "$AZURE_TENANT_ID" ]; then
+            echo "Missing Azure auth variables required to generate DB token."
+            exit 1
+          fi
+
+          az login --service-principal \
+            --username "$AZURE_CLIENT_ID" \
+            --password "$AZURE_CLIENT_SECRET" \
+            --tenant "$AZURE_TENANT_ID" \
+            --allow-no-subscriptions 1>/dev/null
+
+          TOKEN=$(az account get-access-token --resource-type oss-rdbms --query accessToken --output tsv)
+          if [ -z "$TOKEN" ]; then
+            echo "Failed to generate DB access token."
+            exit 1
+          fi
+
+          echo "DB_ACCESS_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+          echo "DB access token generated."
+      - name: Run Playwright Dev Tests
+        uses: ./.github/actions/run-playwright-dev-tests
+        with:
+          TEST_COMMAND: ENV=dev npm run test-dxp-dev-tests
+          GOOGLE_CHAT_WEBHOOK_DEVTESTS: ${{ secrets.GOOGLE_CHAT_WEBHOOK_DEVTESTS }}
+          REPORT_NAME: playwright-report
+          REPORT_PATH: playwright-report

@@ -1,0 +1,50 @@
+{
+  "name": "dxp-ui-testing-suite",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test-auth-setup-only": "npx playwright test --config=playwright.config.ts --project=auth-setup --reporter=line",
+    "test-auth-setup-dxp-axp-only": "npx playwright test --config=playwright.config.ts --project=auth-setup --project=auth-setup-axp --reporter=line",
+    "test-dxp-ui-no-auth-in-report": "npm run test-auth-setup-only && npx playwright test --config=playwright.config.ts --project=uiTests --no-deps",
+    "test-dxp-ui": "npm run test-auth-setup-dxp-axp-only && npx playwright test --config=playwright.config.ts --project=uiTests --project=customerInitiatedAmendments --no-deps",
+    "test-dxp-ui-old": "npx playwright test --config=playwright.config.ts --project=uiTests",
+    "test-dxp-ui-with-customer-initiated": "npm run test-auth-setup-dxp-axp-only && npx playwright test --config=playwright.config.ts --project=uiTests --project=customerInitiatedAmendments --no-deps",
+    "test-dailysanity": "npx playwright test --config=playwright.config.ts --grep \"@dailysanity\" --project=uiTests",
+    "test-specific-file": "npx playwright --config=playwright.config.ts --project=uiTests",
+    "test-data-pack-creation": "npx playwright test --config=playwright.config.ts --grep Create Contracts for all accounts --project=dataPackTests",
+    "test-data-pack-axp-activation": "npx playwright test  --config=playwright.config.ts --grep Activate dataPack contracts in AXP --project=dataPackTests",
+    "activating-contracts": "npx playwright test  --config=playwright.config.ts --grep Activation of Pending Activation Contracts in AXP --project=dataPackTests-noAuthSetup",
+    "test-dxp-dev-tests": "npx playwright test --config=playwright.config.ts --project=devTests",
+    "test-sit-sanity": "npx playwright test --config=playwright.config.ts --grep \"@sit-sanity\" --project=sitTests",
+    "test-feature-smoke": "npx playwright test --config=playwright.config.ts --project=featureTests",
+    "test-data-pack-renewal-prep": "npx playwright test --config=playwright.config.ts --grep \"Prep some Manual / LateRenewal Eligible Yearly contracts\" --project=dataPackTests",
+    "test-data-pack-amendment-draft-discard": "npx playwright test --config=playwright.config.ts --grep \"Amendment Draft Contracts - Discarding Drafts\" --project=dataPackTests"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/CorpBusinessSystems/dxp-ui-testing-suite.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/CorpBusinessSystems/dxp-ui-testing-suite/issues"
+  },
+  "homepage": "https://github.com/CorpBusinessSystems/dxp-ui-testing-suite#readme",
+  "devDependencies": {
+    "@playwright/test": "^1.51.1",
+    "@types/node": "^22.20.1",
+    "@types/pg": "^8.20.0",
+    "@types/tedious": "^4.0.14"
+  },
+  "dependencies": {
+    "dotenv": "^16.6.1",
+    "jq": "^1.7.2",
+    "pg": "^8.20.0",
+    "proper-lockfile": "^4.1.2",
+    "tedious": "^18.6.1",
+    "winston": "^3.17.0"
+  }
+}

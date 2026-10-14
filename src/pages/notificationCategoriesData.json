@@ -1,0 +1,47 @@
+{
+  "Contracts": [
+    { "label": "Contract submitted", "required": false },
+    { "label": "Contract pending activation", "required": false },
+    { "label": "Contract activation in progress", "required": false },
+    { "label": "Contract activated", "required": false },
+    { "label": "Contract on hold", "required": true },
+    { "label": "Contract cancelled", "required": true },
+    { "label": "Contract error", "required": true },
+    { "label": "Contract auto-renewal enabled or disabled by customer", "required": false },
+    { "label": "Amendment submitted", "required": false },
+    { "label": "Amendment in progress", "required": false },
+    { "label": "Amendment activated", "required": false },
+    { "label": "Amendment on hold", "required": true },
+    { "label": "Amendment error", "required": true },
+    { "label": "Amendment cancelled", "required": true },
+    { "label": "Missing base products", "required": false },
+    { "label": "Discount or billing request status", "required": false },
+    { "label": "Contract details bulk update", "required": false }
+  ],
+  "Customer Requests": [
+    { "label": "New amendment request received", "required": false },
+    { "label": "Amendment request modified", "required": false },
+    { "label": "Amendment request deleted", "required": false },
+    { "label": "Amendment request accepted or declined", "required": false }
+  ],
+  "Contract Expiration and Renewals": [
+    { "label": "Upcoming renewal quote", "required": false },
+    { "label": "Renewal quote generated", "required": false },
+    { "label": "Renewal reminder", "required": false },
+    { "label": "Upcoming auto-renewal", "required": false },
+    { "label": "Auto-renewal successful", "required": false },
+    { "label": "Upcoming expiration", "required": false },
+    { "label": "Renewal submitted", "required": false },
+    { "label": "Contract expires today", "required": false },
+    { "label": "Late renewal reminder", "required": false },
+    { "label": "Late renewal expires today", "required": false }
+  ],
+  "Devices": [
+    { "label": "Customer transfers the device back", "required": false },
+    { "label": "Device blocked", "required": false },
+    { "label": "Device unblocked", "required": false }
+  ],
+  "Customer Accounts": [
+    { "label": "Account invitation not accepted", "required": false }
+  ]
+}

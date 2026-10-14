@@ -1,0 +1,67 @@
+name: Run Playwright Dev Tests
+description: Run Playwright dev tests, upload report, notify Google Chat, and fail on test failure.
+
+inputs:
+  TEST_COMMAND:
+    description: Command to execute Playwright tests.
+    required: true
+  GOOGLE_CHAT_WEBHOOK_DEVTESTS:
+    description: Google Chat webhook for dev test notifications.
+    required: true
+  REPORT_NAME:
+    description: Playwright report artifact name.
+    required: false
+    default: playwright-report
+  REPORT_PATH:
+    description: Playwright report path.
+    required: false
+    default: playwright-report
+
+runs:
+  using: composite
+  steps:
+    - name: Install dependencies
+      shell: bash
+      run: npm ci
+
+    - name: Install Playwright Browsers
+      shell: bash
+      run: npx playwright install --with-deps
+
+    - name: Run Playwright Dev Tests
+      id: pw
+      continue-on-error: true
+      shell: bash
+      run: |
+        ${{ inputs.TEST_COMMAND }}
+
+    - name: Upload Playwright HTML Report
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.REPORT_NAME }}
+        path: ${{ inputs.REPORT_PATH }}
+
+    - name: Google Chat Notification - Success
+      if: steps.pw.outcome == 'success'
+      shell: bash
+      run: |
+        curl -X POST -H "Content-Type: application/json" \
+          -d "{
+            \"text\": \"✅ *Playwright PASSED on Dev*.\n\nTriggered by: ${{ github.actor }}\n\n📄 *View Run & Download Report:* https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\n\nGood to deploy to *QA Environment*.\"
+          }" \
+          "${{ inputs.GOOGLE_CHAT_WEBHOOK_DEVTESTS }}"
+
+    - name: Google Chat Notification - Failure
+      if: steps.pw.outcome == 'failure'
+      shell: bash
+      run: |
+        curl -X POST -H "Content-Type: application/json" \
+          -d "{
+            \"text\": \"❌ *Playwright FAILED on Dev*.\n\nTriggered by: ${{ github.actor }}\n\n📄 *View Run & Download Report:* https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\nChecks if the required FFs are ON and OFF.\nPlease check errors before deploying to QA.\"
+          }" \
+          "${{ inputs.GOOGLE_CHAT_WEBHOOK_DEVTESTS }}"
+
+    - name: Fail Job if Tests Failed
+      if: steps.pw.outcome == 'failure'
+      shell: bash
+      run: exit 1

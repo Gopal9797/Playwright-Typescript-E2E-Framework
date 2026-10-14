@@ -1,0 +1,433 @@
+# Feature smoke tests (device, customer, and user feature specs).
+# Runs project featureTests (depends on featureApiAuthSetup).
+# Requires pre-provisioned dealer/customer/subscription data for the chosen ENV — see docs/feature-smoke-tests.md
+#
+# Sharding: set `shards` > 1 to run parallel jobs; each runs Playwright with `--shard=i/total`. IAM pool files are
+# per-shard (see src/utils/iamDevice/iamDevicePool.ts).
+#
+# Optional smoke test targets: set via workflow_dispatch inputs (see below). Leave blank to use defaults in
+# src/config/featureTestConfig.ts. SMOKE_ASSIGN_SUBSCRIPTION_IDS, SMOKE_USER_ASSIGN_SUBSCRIPTION_IDS,
+# and SMOKE_USER_ASSIGN_USER_IDS may be comma-separated.
+#
+# Schedule: daily 16:00 UTC (4pm UTC), 	04:00 am NZST; uses ENV=dev (no workflow_dispatch inputs).
+
+name: Feature smoke tests
+
+on:
+  schedule:
+    - cron: "0 16 * * *"
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target DXP environment (matches ENV in playwright.config / testConfig)
+        required: false
+        default: dev
+        type: choice
+        options:
+          - qa
+          - dev
+      feature:
+        description: Feature spec selection (all or one migrated feature file)
+        required: false
+        default: all
+        type: choice
+        options:
+          - all
+          - device-management
+          - device-transfer
+          - customer-management
+          - device-license-assignment
+          - device-superkey
+          - user-license-assignment
+      grep:
+        description: Optional Playwright title or tag grep (default @smoke)
+        required: false
+        default: '@smoke'
+        type: string
+      shards:
+        description: Playwright shard count (parallel jobs); 1 = single run, no --shard split
+        required: false
+        default: '1'
+        type: choice
+        options:
+          - '1'
+          - '2'
+          - '3'
+          - '4'
+          - '5'
+          - '6'
+      workers:
+        description: Playwright worker count per shard job (--workers)
+        required: false
+        default: '2'
+      smoke_dealer_account_id:
+        description: SMOKE_DEALER_ACCOUNT_ID (optional; empty = config default)
+        required: false
+        type: string
+        default: ''
+      smoke_iam_account_id:
+        description: SMOKE_IAM_ACCOUNT_ID (optional; empty = config default)
+        required: false
+        type: string
+        default: ''
+      smoke_different_dealer_account_id:
+        description: SMOKE_DIFFERENT_DEALER_ACCOUNT_ID (optional; empty = config default)
+        required: false
+        type: string
+        default: ''
+      smoke_different_iam_account_id:
+        description: SMOKE_DIFFERENT_IAM_ACCOUNT_ID (optional; empty = config default)
+        required: false
+        type: string
+        default: ''
+      smoke_customer_account_cdh_id:
+        description: SMOKE_CUSTOMER_ACCOUNT_CDH_ID (optional; empty = config default)
+        required: false
+        type: string
+        default: ''
+      smoke_customer_name:
+        description: SMOKE_CUSTOMER_NAME — customer display name used in UI pickers (optional; empty = config default)
+        required: false
+        type: string
+        default: ''
+      smoke_assign_subscription_ids:
+        description: SMOKE_ASSIGN_SUBSCRIPTION_IDS — comma-separated line ids (optional; empty = config default)
+        required: false
+        type: string
+        default: ''
+      smoke_assign_subscription_same_family_sku:
+        description: SMOKE_ASSIGN_SUBSCRIPTION_SAME_FAMILY_SKU (optional; empty = config default)
+        required: false
+        type: string
+        default: ''
+      smoke_user_assign_subscription_ids:
+        description: SMOKE_USER_ASSIGN_SUBSCRIPTION_IDS — comma-separated line ids for user license assignment (optional; empty = config default)
+        required: false
+        type: string
+        default: ''
+      smoke_user_assign_user_ids:
+        description: SMOKE_USER_ASSIGN_USER_IDS — comma-separated user ids for user license assignment (optional; empty = config default)
+        required: false
+        type: string
+        default: ''
+      smoke_account_member_email:
+        description: SMOKE_ACCOUNT_MEMBER_EMAIL — Account Members email for UI user license tests (optional; empty = config default)
+        required: false
+        type: string
+        default: ''
+      iam_device_pool_size:
+        description: IAM_DEVICE_POOL_SIZE — override per-shard pool size (non-negative integer; empty = auto-size)
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+  actions: read # download shard report artifacts in notify job
+
+env:
+  CI: true
+
+jobs:
+  feature-smoke:
+    name: Feature smoke ${{ matrix.shard }}/${{ github.event.inputs.shards || '1' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: ${{ github.event.inputs.environment || 'dev' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
+    # Resolution priority for each value: workflow_dispatch input → repo (or environment) Variable
+    # in `src/config/featureTestConfig.ts`. Use GitHub repo Variables (Settings → Secrets and
+    # variables → Actions → Variables) — these are account/subscription IDs.
+    env:
+      UPG_ACCOUNT_EMAIL: ${{ secrets.UPG_ACCOUNT_EMAIL }}
+      UPG_ACCOUNT_PASSWORD: ${{ secrets.UPG_ACCOUNT_PASSWORD }}
+      DB_HOST_DEV: ${{ vars.DB_HOST_DEV }}
+      DB_HOST_QA: ${{ secrets.DB_HOST_QA }}
+      DB_USER_DEV: ${{ vars.DB_USER_DEV }}
+      DB_USER_QA: ${{ secrets.DB_USER_QA }}
+      SMOKE_DEALER_ACCOUNT_ID: ${{ github.event.inputs.smoke_dealer_account_id || vars.SMOKE_DEALER_ACCOUNT_ID }}
+      SMOKE_IAM_ACCOUNT_ID: ${{ github.event.inputs.smoke_iam_account_id || vars.SMOKE_IAM_ACCOUNT_ID }}
+      SMOKE_DIFFERENT_DEALER_ACCOUNT_ID: ${{ github.event.inputs.smoke_different_dealer_account_id || vars.SMOKE_DIFFERENT_DEALER_ACCOUNT_ID }}
+      SMOKE_DIFFERENT_IAM_ACCOUNT_ID: ${{ github.event.inputs.smoke_different_iam_account_id || vars.SMOKE_DIFFERENT_IAM_ACCOUNT_ID }}
+      SMOKE_CUSTOMER_ACCOUNT_CDH_ID: ${{ github.event.inputs.smoke_customer_account_cdh_id || vars.SMOKE_CUSTOMER_ACCOUNT_CDH_ID }}
+      SMOKE_CUSTOMER_NAME: ${{ github.event.inputs.smoke_customer_name || vars.SMOKE_CUSTOMER_NAME }}
+      SMOKE_ASSIGN_SUBSCRIPTION_IDS: ${{ github.event.inputs.smoke_assign_subscription_ids || vars.SMOKE_ASSIGN_SUBSCRIPTION_IDS }}
+      SMOKE_ASSIGN_SUBSCRIPTION_SAME_FAMILY_SKU: ${{ github.event.inputs.smoke_assign_subscription_same_family_sku || vars.SMOKE_ASSIGN_SUBSCRIPTION_SAME_FAMILY_SKU }}
+      SMOKE_USER_ASSIGN_SUBSCRIPTION_IDS: ${{ github.event.inputs.smoke_user_assign_subscription_ids || vars.SMOKE_USER_ASSIGN_SUBSCRIPTION_IDS }}
+      SMOKE_USER_ASSIGN_USER_IDS: ${{ github.event.inputs.smoke_user_assign_user_ids || vars.SMOKE_USER_ASSIGN_USER_IDS }}
+      SMOKE_ACCOUNT_MEMBER_EMAIL: ${{ github.event.inputs.smoke_account_member_email || vars.SMOKE_ACCOUNT_MEMBER_EMAIL }}
+    steps:
+      - uses: actions/checkout@v4
+        if: ${{ matrix.shard <= fromJSON(github.event.inputs.shards || '1') }}
+
+      - uses: actions/setup-node@v4
+        if: ${{ matrix.shard <= fromJSON(github.event.inputs.shards || '1') }}
+        with:
+          node-version: lts/*
+          cache: 'npm'
+
+      - name: Install dependencies
+        if: ${{ matrix.shard <= fromJSON(github.event.inputs.shards || '1') }}
+        run: npm ci
+
+      - name: Cache Playwright browsers
+        if: ${{ matrix.shard <= fromJSON(github.event.inputs.shards || '1') }}
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-playwright-
+
+      - name: Install Playwright system dependencies
+        if: ${{ matrix.shard <= fromJSON(github.event.inputs.shards || '1') }}
+        run: npx playwright install-deps chromium
+
+      - name: Install Playwright browser
+        if: ${{ matrix.shard <= fromJSON(github.event.inputs.shards || '1') && steps.playwright-cache.outputs.cache-hit != 'true' }}
+        run: npx playwright install chromium
+
+      - name: Prepare DB auth token
+        if: ${{ matrix.shard <= fromJSON(github.event.inputs.shards || '1') }}
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+        run: |
+          if [ -n "$DB_ACCESS_TOKEN" ]; then
+            echo "DB access token is already present."
+            exit 0
+          fi
+
+          if [ -z "$AZURE_CLIENT_ID" ] || [ -z "$AZURE_CLIENT_SECRET" ] || [ -z "$AZURE_TENANT_ID" ]; then
+            echo "Missing Azure auth variables required to generate DB token."
+            exit 1
+          fi
+
+          az login --service-principal \
+            --username "$AZURE_CLIENT_ID" \
+            --password "$AZURE_CLIENT_SECRET" \
+            --tenant "$AZURE_TENANT_ID" \
+            --allow-no-subscriptions 1>/dev/null
+
+          TOKEN=$(az account get-access-token --resource-type oss-rdbms --query accessToken --output tsv)
+          if [ -z "$TOKEN" ]; then
+            echo "Failed to generate DB access token."
+            exit 1
+          fi
+          echo "DB_ACCESS_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+
+      - name: Run feature smoke tests
+        if: ${{ matrix.shard <= fromJSON(github.event.inputs.shards || '1') }}
+        env:
+          ENV: ${{ github.event.inputs.environment || 'dev' }}
+          IAM_DEVICE_POOL_SIZE: ${{ github.event.inputs.iam_device_pool_size }}
+          FEATURE_SELECTION: ${{ github.event.inputs.feature || 'all' }}
+          FEATURE_GREP: ${{ github.event.inputs.grep || '@smoke' }}
+        run: |
+          FEATURE_FILE=""
+          case "$FEATURE_SELECTION" in
+            device-management) FEATURE_FILE="src/tests/device/deviceManagement.spec.ts" ;;
+            device-transfer) FEATURE_FILE="src/tests/device/deviceTransfer.spec.ts" ;;
+            customer-management) FEATURE_FILE="src/tests/customer/customerManagement.spec.ts" ;;
+            device-license-assignment) FEATURE_FILE="src/tests/device/licenseAssignment.spec.ts" ;;
+            device-superkey) FEATURE_FILE="src/tests/device/superkey.spec.ts" ;;
+            user-license-assignment) FEATURE_FILE="src/tests/user/licenseAssignment.spec.ts" ;;
+          esac
+          npm run test-feature-smoke -- \
+            --grep="$FEATURE_GREP" \
+            ${FEATURE_FILE} \
+            --workers=${{ github.event.inputs.workers || '2' }} \
+            --shard=${{ matrix.shard }}/${{ github.event.inputs.shards || '1' }}
+
+      - name: Upload HTML report
+        if: ${{ always() && matrix.shard <= fromJSON(github.event.inputs.shards || '1') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: feature-smoke-playwright-report-shard-${{ matrix.shard }}-of-${{ github.event.inputs.shards || '1' }}
+          path: playwright-report/
+          retention-days: 30
+
+      - name: Upload traces and artifacts
+        if: ${{ failure() && matrix.shard <= fromJSON(github.event.inputs.shards || '1') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: feature-smoke-playwright-artifacts-shard-${{ matrix.shard }}-of-${{ github.event.inputs.shards || '1' }}
+          path: playwright-artifacts/
+          retention-days: 14
+
+  # Aggregate JSON reports from all shards and notify Google Chat (same pattern as dxp-ui-automation-qa.yml).
+  feature-smoke-notify:
+    name: Feature smoke — Google Chat
+    runs-on: ubuntu-latest
+    needs: feature-smoke
+    if: always()
+    environment: ${{ github.event.inputs.environment || 'dev' }}
+    steps:
+      - name: Download Playwright JSON reports (all shards)
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          path: downloaded-reports
+          pattern: feature-smoke-playwright-report-shard-*
+
+      - name: Aggregate Playwright results and notify Google Chat
+        if: always()
+        env:
+          WEBHOOK_URL: ${{ secrets.GOOGLE_CHAT_WEBHOOK_URL }}
+        run: |
+          mkdir -p downloaded-reports
+          REPORT_FILES=""
+          if [ -d downloaded-reports ]; then
+            REPORT_FILES=$(find downloaded-reports -name results.json -type f 2>/dev/null | sort || true)
+          fi
+          PASSED=0
+          FAILED=0
+          SKIPPED=0
+          FLAKY=0
+          TOTAL=0
+          PASS_PERCENTAGE="N/A"
+          FAILED_LIST="None"
+          PLAYWRIGHT_DURATION="N/A"
+
+          if [ -z "$REPORT_FILES" ]; then
+            echo "Warning: No playwright-report/results.json found in downloaded artifacts."
+          else
+            for REPORT_FILE in $REPORT_FILES; do
+              P=$(jq '.stats.expected // 0' "$REPORT_FILE")
+              F=$(jq '.stats.unexpected // 0' "$REPORT_FILE")
+              S=$(jq '.stats.skipped // 0' "$REPORT_FILE")
+              FL=$(jq '.stats.flaky // 0' "$REPORT_FILE")
+              PASSED=$((PASSED + P))
+              FAILED=$((FAILED + F))
+              SKIPPED=$((SKIPPED + S))
+              FLAKY=$((FLAKY + FL))
+            done
+            TOTAL=$((PASSED + FAILED + SKIPPED + FLAKY))
+            if [ "$TOTAL" -gt 0 ]; then
+              PASS_PERCENTAGE=$(echo "scale=2; ($PASSED * 100) / $TOTAL" | bc)
+            fi
+
+            FAILED_PARTS=""
+            for REPORT_FILE in $REPORT_FILES; do
+              PART=$(jq -r '
+                [ ..
+                  | objects
+                  | .specs?[]? as $spec
+                  | $spec.tests[]? as $test
+                  | select($test.status == "unexpected" or $test.status == "failed")
+                  | "- "
+                    + ($spec.title // "Untitled")
+                    + " (" + ($spec.file // "unknown") + ")"
+                    + (if $test.projectName then " [" + $test.projectName + "]" else "" end)
+                    + ": "
+                    + (
+                        [ $test.results[]?.errors[]? | (.message // .value // "") ]
+                        | map( gsub("\\r?\\n"; " ") )
+                        | join(" | ")
+                        | if length > 0 then . else "Reason not available" end
+                      )
+                ]
+                | if length == 0 then empty else join("\n") end
+              ' "$REPORT_FILE")
+              if [ -n "$PART" ]; then
+                if [ -n "$FAILED_PARTS" ]; then
+                  FAILED_PARTS="$FAILED_PARTS"$'\n'"$PART"
+                else
+                  FAILED_PARTS="$PART"
+                fi
+              fi
+            done
+            if [ -n "$FAILED_PARTS" ]; then
+              FAILED_LIST="$FAILED_PARTS"
+            fi
+
+            MAX_CHARS=3500
+            if [ ${#FAILED_LIST} -gt $MAX_CHARS ]; then
+              FAILED_LIST="${FAILED_LIST:0:$MAX_CHARS}"$'\n'"... (truncated)"
+            fi
+          fi
+
+          echo "--- Feature smoke summary (aggregated shards) ---"
+          echo "Total: $TOTAL | Passed: $PASSED | Failed: $FAILED | Flaky: $FLAKY | Skipped: $SKIPPED"
+
+          if [ -z "${WEBHOOK_URL:-}" ]; then
+            echo "GOOGLE_CHAT_WEBHOOK_URL not set; skipping Google Chat notification."
+            exit 0
+          fi
+
+          if [ "$TOTAL" -eq 0 ]; then
+            CARD_TITLE="Feature smoke — no report data"
+            ICON_URL="https://fonts.gstatic.com/s/i/short-term/release/googlesymbols/warning/default/48px.svg"
+          elif [ "$FAILED" -eq 0 ]; then
+            CARD_TITLE="Feature smoke passed"
+            ICON_URL="https://fonts.gstatic.com/s/i/short-term/release/googlesymbols/check_circle/default/48px.svg"
+          else
+            CARD_TITLE="Feature smoke failed"
+            ICON_URL="https://fonts.gstatic.com/s/i/short-term/release/googlesymbols/error/default/48px.svg"
+          fi
+
+          CLEAN_FAILED_LIST=$(echo "$FAILED_LIST" | head -c 2500 | tr -d '\000-\031')
+
+          PAYLOAD=$(jq -n \
+            --arg title "$CARD_TITLE" \
+            --arg subtitle "Repo: ${{ github.repository }} · Feature smoke (sharded)" \
+            --arg icon "$ICON_URL" \
+            --arg pass "$PASSED" \
+            --arg fail "$FAILED" \
+            --arg flaky "$FLAKY" \
+            --arg skip "$SKIPPED" \
+            --arg pct "${PASS_PERCENTAGE}%" \
+            --arg dur "${PLAYWRIGHT_DURATION}" \
+            --arg logs "$CLEAN_FAILED_LIST" \
+            --arg run_url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            '{
+              cardsV2: [{
+                cardId: "feature_smoke_report",
+                card: {
+                  header: {
+                    title: $title,
+                    subtitle: $subtitle,
+                    imageUrl: $icon,
+                    imageType: "CIRCLE"
+                  },
+                  sections: [
+                    {
+                      header: "Statistics",
+                      widgets: [
+                        { textParagraph: { text: "<b>Pass rate:</b> \($pct) | <b>Duration:</b> \($dur)" } },
+                        { textParagraph: { text: "🟢 <b>Passed:</b> \($pass)  🔴 <b>Failed:</b> \($fail)  ⚠️ <b>Flaky:</b> \($flaky)" } }
+                      ]
+                    },
+                    {
+                      header: "Failure details",
+                      collapsible: true,
+                      uncollapsibleWidgetsCount: 0,
+                      widgets: [
+                        { textParagraph: { text: (if ($fail | tonumber) > 0 then $logs elif ($pass | tonumber) > 0 then "All tests passed successfully!" else "No Playwright JSON report found (shards may have failed before upload)." end) } }
+                      ]
+                    },
+                    {
+                      widgets: [
+                        {
+                          buttonList: {
+                            buttons: [
+                              {
+                                text: "OPEN WORKFLOW",
+                                onClick: { openLink: { url: $run_url } }
+                              }
+                            ]
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }]
+            }')
+
+          curl -sS -X POST -H 'Content-Type: application/json' -d "$PAYLOAD" "$WEBHOOK_URL"

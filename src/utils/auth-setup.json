@@ -1,0 +1,9 @@
+{
+    "TOKENS": [
+        {
+            "name": "TWOACC",
+            "username": "TWO_ACCOUNTS_EMAIL",
+            "password": "TWO_ACCOUNTS_PASSWORD"
+        }
+    ]
+}

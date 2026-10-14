@@ -1,0 +1,647 @@
+name: Regression - QA
+on:
+  workflow_dispatch:
+    inputs:
+      shards:
+        description: Number of shards to run in parallel (1-6)
+        required: false
+        default: "6"
+        type: choice
+        options:
+          - "1"
+          - "2"
+          - "3"
+          - "4"
+          - "5"
+          - "6"
+env:
+  BPC_ACCOUNT_EMAIL: ${{ secrets.BPC_ACCOUNT_EMAIL }}
+  BPC_ACCOUNT_PASSWORD: ${{ secrets.BPC_ACCOUNT_PASSWORD }}
+  SRM_ACCOUNT_EMAIL: ${{ secrets.SRM_ACCOUNT_EMAIL }}
+  AXP_SMS_ACCOUNT_EMAIL: ${{ secrets.AXP_SMS_ACCOUNT_EMAIL }}
+  AXP_BPC_ACCOUNT_EMAIL: ${{ secrets.AXP_BPC_ACCOUNT_EMAIL }}
+  AXP_SRM_ACCOUNT_EMAIL: ${{ secrets.AXP_SRM_ACCOUNT_EMAIL }}
+  AXP_UPG_ACCOUNT_EMAIL: ${{ secrets.AXP_UPG_ACCOUNT_EMAIL }}
+  AXP_GLOBAL_EMAIL: ${{ secrets.AXP_GLOBAL_EMAIL }}
+  AXP_GLOBAL_PASSWORD: ${{ secrets.AXP_GLOBAL_PASSWORD }}
+  UPG_ACCOUNT_EMAIL: ${{ secrets.UPG_ACCOUNT_EMAIL }}
+  UPG_ACCOUNT_PASSWORD: ${{ secrets.UPG_ACCOUNT_PASSWORD }}
+  TECHNICIAN_EMAIL: ${{ secrets.TECHNICIAN_EMAIL }}
+  TECHNICIAN_PASSWORD: ${{ secrets.TECHNICIAN_PASSWORD }}
+  SUPER_ADMIN_EMAIL: ${{ secrets.SUPER_ADMIN_EMAIL }}
+  SUPER_ADMIN_PASSWORD: ${{ secrets.SUPER_ADMIN_PASSWORD }}
+  SUPPORT_PRIMARY_USER_EMAIL: ${{ secrets.SUPPORT_PRIMARY_USER_EMAIL }}
+  SUPPORT_SECONDARY_USER_EMAIL: ${{ secrets.SUPPORT_SECONDARY_USER_EMAIL }}
+  SUPPORT_TECHNICIAN_USER_EMAIL: ${{ secrets.SUPPORT_TECHNICIAN_USER_EMAIL }}
+  DB_SERVER: ${{ secrets.DB_SERVER }}
+  DB_HOST_DEV: ${{ secrets.DB_HOST_DEV }}
+  DB_HOST_QA: ${{ secrets.DB_HOST_QA }}
+  DB_USER_DEV: ${{ secrets.DB_USER_DEV }}
+  DB_USER_QA: ${{ secrets.DB_USER_QA }}
+jobs:
+  UI-Automation-tests:
+    name: UI Tests - Shard ${{ matrix.shard }}/${{ github.event.inputs.shards || '6' }}
+    runs-on: qa-agent-ubuntu
+    timeout-minutes: 180
+    environment: qa
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
+    steps:
+      - name: Skip shard outside selected range
+        if: ${{ matrix.shard > fromJSON(github.event.inputs.shards || '6') }}
+        run: echo "Skipping shard ${{ matrix.shard }} because selected shard count is ${{ github.event.inputs.shards || '6' }}"
+      - uses: actions/checkout@v4
+        if: ${{ matrix.shard <= fromJSON(github.event.inputs.shards || '6') }}
+      - uses: actions/setup-node@v4
+        if: ${{ matrix.shard <= fromJSON(github.event.inputs.shards || '6') }}
+        with:
+          node-version: lts/*
+          cache: npm
+      - name: Install dependencies
+        if: ${{ matrix.shard <= fromJSON(github.event.inputs.shards || '6') }}
+        run: npm ci
+      - name: Install Playwright Browsers
+        if: ${{ matrix.shard <= fromJSON(github.event.inputs.shards || '6') }}
+        run: |
+          wait_for_apt_locks() {
+            local max_wait_seconds=600
+            local waited=0
+
+            while sudo fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || \
+                  sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
+                  sudo fuser /var/cache/apt/archives/lock >/dev/null 2>&1; do
+              if [ "$waited" -ge "$max_wait_seconds" ]; then
+                echo "Timed out waiting for apt/dpkg lock release after ${max_wait_seconds}s."
+                return 1
+              fi
+
+              echo "apt/dpkg lock is busy. Waiting 10s..."
+              sleep 10
+              waited=$((waited + 10))
+            done
+          }
+
+          wait_for_apt_locks
+
+          ATTEMPTS=3
+          for attempt in $(seq 1 "$ATTEMPTS"); do
+            echo "Playwright browser install attempt ${attempt}/${ATTEMPTS}"
+
+            if npx playwright install --with-deps; then
+              echo "Playwright browsers and OS dependencies installed successfully."
+              exit 0
+            fi
+
+            EXIT_CODE=$?
+            if [ "$attempt" -lt "$ATTEMPTS" ]; then
+              echo "Install failed with exit code ${EXIT_CODE}. Waiting for apt lock and retrying..."
+              wait_for_apt_locks || exit 1
+              sleep 10
+            else
+              echo "Playwright install failed after ${ATTEMPTS} attempts (last exit code: ${EXIT_CODE})."
+              exit "$EXIT_CODE"
+            fi
+          done
+      - name: Install Google Chrome for Playwright channel
+        if: ${{ matrix.shard <= fromJSON(github.event.inputs.shards || '6') }}
+        run: |
+          wait_for_apt_locks() {
+            local max_wait_seconds=600
+            local waited=0
+
+            while sudo fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || \
+                  sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
+                  sudo fuser /var/cache/apt/archives/lock >/dev/null 2>&1; do
+              if [ "$waited" -ge "$max_wait_seconds" ]; then
+                echo "Timed out waiting for apt/dpkg lock release after ${max_wait_seconds}s."
+                return 1
+              fi
+
+              echo "apt/dpkg lock is busy before Chrome install. Waiting 10s..."
+              sleep 10
+              waited=$((waited + 10))
+            done
+          }
+
+          wait_for_apt_locks
+
+          ATTEMPTS=3
+          for attempt in $(seq 1 "$ATTEMPTS"); do
+            echo "Chrome install attempt ${attempt}/${ATTEMPTS}"
+
+            if npx playwright install chrome; then
+              echo "Google Chrome channel installed successfully for Playwright."
+              exit 0
+            fi
+
+            EXIT_CODE=$?
+            if [ "$attempt" -lt "$ATTEMPTS" ]; then
+              echo "Chrome install failed with exit code ${EXIT_CODE}. Waiting for apt lock and retrying..."
+              wait_for_apt_locks || exit 1
+              sleep 10
+            else
+              echo "Chrome install failed after ${ATTEMPTS} attempts (last exit code: ${EXIT_CODE})."
+              exit "$EXIT_CODE"
+            fi
+          done
+      - name: Ensure Azure CLI is installed
+        if: ${{ matrix.shard <= fromJSON(github.event.inputs.shards || '6') }}
+        run: |
+          if command -v az >/dev/null 2>&1; then
+            echo "Azure CLI already installed."
+            az version --query '"azure-cli"' -o tsv
+            exit 0
+          fi
+
+          echo "Azure CLI not found. Installing..."
+          if ! command -v sudo >/dev/null 2>&1; then
+            echo "sudo is required to install Azure CLI on this runner."
+            exit 1
+          fi
+
+          curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+          az version --query '"azure-cli"' -o tsv
+
+      - name: Azure Login using Managed Identity
+        if: ${{ matrix.shard <= fromJSON(github.event.inputs.shards || '6') }}
+        run: az login --identity
+
+      - name: Prepare DB auth token using Managed Identity
+        if: ${{ matrix.shard <= fromJSON(github.event.inputs.shards || '6') }}
+        run: |
+          if [ -n "$DB_ACCESS_TOKEN" ]; then
+            echo "DB access token is already present."
+            exit 0
+          fi
+
+          TOKEN=$(az account get-access-token --resource-type oss-rdbms --query accessToken --output tsv)
+          if [ -z "$TOKEN" ]; then
+            echo "Failed to generate DB access token from managed identity."
+            exit 1
+          fi
+
+          echo "DB_ACCESS_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+          echo "DB access token generated using managed identity."
+      - name: Run Playwright tests for shard
+        if: ${{ matrix.shard <= fromJSON(github.event.inputs.shards || '6') }}
+        id: run_shard
+        run: |
+          set +e
+          SHARD_TOTAL="${{ github.event.inputs.shards || '6' }}"
+          echo "Running shard ${{ matrix.shard }}/$SHARD_TOTAL"
+          ENV=qa npm run test-dxp-ui -- --shard=${{ matrix.shard }}/$SHARD_TOTAL --reporter=blob
+          TEST_EXIT=$?
+          echo "Shard ${{ matrix.shard }} exit code: $TEST_EXIT"
+          echo "exit_code=$TEST_EXIT" >> $GITHUB_OUTPUT
+          exit 0
+      - uses: actions/upload-artifact@v4
+        id: upload_blob_report
+        if: ${{ always() && matrix.shard <= fromJSON(github.event.inputs.shards || '6') }}
+        with:
+          name: playwright-blob-report-${{ matrix.shard }}
+          path: blob-report/
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Fail shard if tests failed
+        if: ${{ always() && matrix.shard <= fromJSON(github.event.inputs.shards || '6') && steps.run_shard.outputs.exit_code != '0' }}
+        run: |
+          echo "Shard ${{ matrix.shard }} failed with exit code ${{ steps.run_shard.outputs.exit_code }}"
+          exit 1
+
+  Merge-Reports-And-Notify:
+    runs-on: qa-agent-ubuntu
+    timeout-minutes: 120
+    environment: qa
+    needs: UI-Automation-tests
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Download shard blob reports
+        if: always()
+        uses: actions/download-artifact@v4
+        with:
+          pattern: playwright-blob-report-*
+          path: all-blob-reports
+      - name: Merge shard reports into one Playwright report
+        if: always()
+        run: |
+          EXPECTED_SHARDS="${{ github.event.inputs.shards || '6' }}"
+          mkdir -p merged-blob-input
+          SHARD_FILES=0
+          while IFS= read -r ZIP_FILE; do
+            SHARD_FILES=$((SHARD_FILES + 1))
+            cp "$ZIP_FILE" "merged-blob-input/shard-${SHARD_FILES}-$(basename "$ZIP_FILE")"
+          done < <(find all-blob-reports -type f -name '*.zip' | sort)
+          FOUND_SHARDS="$SHARD_FILES"
+
+          echo "PLAYWRIGHT_SHARDS_EXPECTED=$EXPECTED_SHARDS" >> $GITHUB_ENV
+          echo "PLAYWRIGHT_SHARDS_FOUND=$FOUND_SHARDS" >> $GITHUB_ENV
+
+          if [ "$FOUND_SHARDS" -lt "$EXPECTED_SHARDS" ]; then
+            echo "PLAYWRIGHT_SHARD_MISSING=1" >> $GITHUB_ENV
+            echo "Warning: Expected $EXPECTED_SHARDS shard reports, found $FOUND_SHARDS."
+          else
+            echo "PLAYWRIGHT_SHARD_MISSING=0" >> $GITHUB_ENV
+          fi
+
+          if [ "$FOUND_SHARDS" -eq 0 ]; then
+            echo "No shard reports found. Creating fallback results file."
+            mkdir -p playwright-report
+            echo '{"stats":{"expected":0,"unexpected":1,"skipped":0,"flaky":0},"suites":[]}' > playwright-report/results.json
+            exit 0
+          fi
+
+          mkdir -p playwright-report
+
+          # Generate HTML report artifact for download/viewing.
+          npx playwright merge-reports --config=playwright.merge.config.ts --reporter=html merged-blob-input
+
+          # Generate machine-readable JSON summary after HTML generation.
+          npx playwright merge-reports --config=playwright.merge.config.ts --reporter=json merged-blob-input > playwright-report/results.json
+      - name: Estimate Planned Test Count
+        if: always()
+        run: |
+          PLANNED_TOTAL=0
+          ENV=qa npx playwright test --config=playwright.config.ts --project=uiTests --project=customerInitiatedAmendments --no-deps --list --reporter=line > planned-tests-list.txt 2>&1 || true
+
+          TOTAL_LINE=$(grep -E 'Total:[[:space:]]+[0-9]+ tests' planned-tests-list.txt | tail -n 1 || true)
+          if [ -n "$TOTAL_LINE" ]; then
+            PLANNED_TOTAL=$(echo "$TOTAL_LINE" | sed -E 's/.*Total:[[:space:]]+([0-9]+) tests.*/\1/')
+          else
+            echo "Warning: Unable to parse planned test count from Playwright --list output."
+          fi
+
+          echo "PLAYWRIGHT_PLANNED_TOTAL=$PLANNED_TOTAL" >> $GITHUB_ENV
+      - name: Parse merged Playwright Results with JQ
+        id: parse_results
+        if: always()
+        run: |
+          REPORT_FILE="playwright-report/results.json"
+          PLANNED_TOTAL="${PLAYWRIGHT_PLANNED_TOTAL:-0}"
+          PASSED=0
+          FAILED_LIST=""
+          FAILED=0
+          SKIPPED=0
+          FLAKY=0
+          PASS_PERCENTAGE=0
+          PLAYWRIGHT_DURATION="N/A"
+          TOTAL=0
+          NOT_RUN=0
+          REPORT_MISSING=0
+          PARTIAL_COUNTS=0
+
+          if [ -f "$REPORT_FILE" ]; then
+            PASSED=$(jq '.stats.expected // 0' "$REPORT_FILE")
+            FAILED=$(jq '.stats.unexpected // 0' "$REPORT_FILE")
+            SKIPPED=$(jq '.stats.skipped // 0' "$REPORT_FILE")
+            FLAKY=$(jq '.stats.flaky // 0' "$REPORT_FILE")
+
+            # Build a newline-separated list of failed tests with reasons (title, file, project: first error message), traversing nested suites
+            FAILED_LIST=$(jq -r '
+              [ ..
+                | objects
+                | .specs?[]? as $spec
+                | $spec.tests[]? as $test
+                | select($test.status == "unexpected" or $test.status == "failed")
+                | "- "
+                  + ($spec.title // "Untitled")
+                  + " (" + ($spec.file // "unknown") + ")"
+                  + (if $test.projectName then " [" + $test.projectName + "]" else "" end)
+                  + ": "
+                  + (
+                      [ $test.results[]?.errors[]? | (.message // .value // "") ]
+                      | map( gsub("\\r?\\n"; " ") )
+                      | join(" | ")
+                      | if length > 0 then . else "Reason not available" end
+                    )
+              ]
+              | if length == 0 then "None" else join("\n") end
+            ' "$REPORT_FILE")
+            TOTAL=$(jq '((.stats.expected // 0) + (.stats.unexpected // 0) + (.stats.skipped // 0) + (.stats.flaky // 0))' "$REPORT_FILE")
+            if [ "$TOTAL" -gt 0 ]; then
+              PASS_PERCENTAGE=$(echo "scale=2; ($PASSED * 100) / $TOTAL" | bc)
+            fi
+          else
+            echo "Warning: Playwright JSON report file not found at $REPORT_FILE."
+            REPORT_MISSING=1
+            FAILED_LIST="Merged report unavailable. Attempting best-effort summary from available shard blobs."
+
+            while IFS= read -r ZIP_FILE; do
+              rm -rf partial-blob-input
+              mkdir -p partial-blob-input
+              cp "$ZIP_FILE" "partial-blob-input/$(basename "$ZIP_FILE")"
+
+              if npx playwright merge-reports --config=playwright.merge.config.ts --reporter=json partial-blob-input > partial-results.json; then
+                P=$(jq '.stats.expected // 0' partial-results.json)
+                F=$(jq '.stats.unexpected // 0' partial-results.json)
+                S=$(jq '.stats.skipped // 0' partial-results.json)
+                FL=$(jq '.stats.flaky // 0' partial-results.json)
+
+                PASSED=$((PASSED + P))
+                FAILED=$((FAILED + F))
+                SKIPPED=$((SKIPPED + S))
+                FLAKY=$((FLAKY + FL))
+                PARTIAL_COUNTS=1
+              else
+                echo "Warning: unable to parse shard blob $(basename "$ZIP_FILE") for fallback summary."
+              fi
+            done < <(find merged-blob-input -type f -name '*.zip' | sort)
+
+            if [ "$PARTIAL_COUNTS" -eq 1 ]; then
+              TOTAL=$((PASSED + FAILED + SKIPPED + FLAKY))
+              if [ "$TOTAL" -gt 0 ]; then
+                PASS_PERCENTAGE=$(echo "scale=2; ($PASSED * 100) / $TOTAL" | bc)
+              fi
+              REPORT_MISSING=0
+              FAILED_LIST="Partial summary from available shard blobs. Detailed failed-test list unavailable because merged results.json is missing."
+            else
+              FAILED=1
+              FAILED_LIST="Report merge failed. results.json not found."
+            fi
+          fi
+
+          if [[ "$PLANNED_TOTAL" =~ ^[0-9]+$ ]] && [ "$PLANNED_TOTAL" -gt "$TOTAL" ]; then
+            NOT_RUN=$((PLANNED_TOTAL - TOTAL))
+          fi
+
+          SKIPPED_INCL_NOT_RUN=$((SKIPPED + NOT_RUN))
+
+          if [ "$PLAYWRIGHT_SHARD_MISSING" = "1" ]; then
+            SHARD_ERROR="Missing shard report(s): found $PLAYWRIGHT_SHARDS_FOUND/$PLAYWRIGHT_SHARDS_EXPECTED"
+            if [ -n "$FAILED_LIST" ] && [ "$FAILED_LIST" != "None" ]; then
+              FAILED_LIST="$FAILED_LIST\n- $SHARD_ERROR"
+            else
+              FAILED_LIST="- $SHARD_ERROR"
+            fi
+          fi
+
+          echo "Total Tests: $TOTAL"
+          echo "Passed Tests: $PASSED"
+          echo "Failed Tests: $FAILED"
+          echo "Skipped Tests (incl. not run): $SKIPPED_INCL_NOT_RUN"
+          echo "Estimated Not Run Tests: $NOT_RUN"
+          echo "Flaky Tests: $FLAKY"
+          echo "Pass Percentage: $PASS_PERCENTAGE%"
+          echo "Shards Found: $PLAYWRIGHT_SHARDS_FOUND/$PLAYWRIGHT_SHARDS_EXPECTED"
+          echo "PLAYWRIGHT_PASSED=$PASSED" >> $GITHUB_ENV
+          echo "PLAYWRIGHT_FAILED=$FAILED" >> $GITHUB_ENV
+
+          # Export multi-line failed list to environment
+          # Truncate if excessively long (to avoid webhook limits)
+          MAX_CHARS=3500
+          if [ ${#FAILED_LIST} -gt $MAX_CHARS ]; then
+            FAILED_LIST="${FAILED_LIST:0:$MAX_CHARS}\n... (truncated)"
+          fi
+          {
+            echo "PLAYWRIGHT_FAILED_LIST<<EOF"
+            echo "$FAILED_LIST"
+            echo "EOF"
+          } >> $GITHUB_ENV
+          echo "PLAYWRIGHT_SKIPPED=$SKIPPED" >> $GITHUB_ENV
+          echo "PLAYWRIGHT_FLAKY=$FLAKY" >> $GITHUB_ENV
+          echo "PLAYWRIGHT_TOTAL=$TOTAL" >> $GITHUB_ENV
+          echo "PLAYWRIGHT_NOT_RUN=$NOT_RUN" >> $GITHUB_ENV
+          echo "PLAYWRIGHT_REPORT_MISSING=$REPORT_MISSING" >> $GITHUB_ENV
+          echo "PLAYWRIGHT_PARTIAL_COUNTS=$PARTIAL_COUNTS" >> $GITHUB_ENV
+          echo "PLAYWRIGHT_PASS_PERCENTAGE=$PASS_PERCENTAGE" >> $GITHUB_ENV
+          echo "PLAYWRIGHT_DURATION=$PLAYWRIGHT_DURATION" >> $GITHUB_ENV
+      - name: Capture Slowest Tests
+        if: always()
+        run: |
+          REPORT_FILE="playwright-report/results.json"
+
+          if [ ! -f "$REPORT_FILE" ]; then
+            {
+              echo "PLAYWRIGHT_SLOW_TESTS<<EOF"
+              echo "### Slowest Tests (Top 10)"
+              echo "No merged report available."
+              echo "EOF"
+            } >> $GITHUB_ENV
+            exit 0
+          fi
+
+          node <<'NODE'
+          const fs = require('fs');
+
+          const reportPath = 'playwright-report/results.json';
+          const data = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
+          const rows = [];
+
+          function clean(value) {
+            return String(value || '')
+              .replace(/\|/g, '\\|')
+              .replace(/\r?\n/g, ' ')
+              .trim();
+          }
+
+          function collectFromSuite(suite) {
+            for (const spec of suite.specs || []) {
+              for (const test of spec.tests || []) {
+                const durationMs = (test.results || []).reduce((sum, result) => sum + (result.duration || 0), 0);
+                rows.push({
+                  durationMs,
+                  project: clean(test.projectName || test.projectId || 'unknown'),
+                  file: clean(spec.file || suite.file || ''),
+                  title: clean(spec.title || 'Unnamed test')
+                });
+              }
+            }
+
+            for (const childSuite of suite.suites || []) {
+              collectFromSuite(childSuite);
+            }
+          }
+
+          for (const topSuite of data.suites || []) {
+            collectFromSuite(topSuite);
+          }
+
+          rows.sort((a, b) => b.durationMs - a.durationMs);
+          const top = rows.slice(0, 10);
+
+          let markdown = '### Slowest Tests (Top 10)\n';
+          markdown += '| Duration | Project | File | Test |\n';
+          markdown += '|---:|---|---|---|\n';
+
+          if (top.length === 0) {
+            markdown += '| n/a | n/a | n/a | No tests found in merged report |\n';
+          } else {
+            for (const row of top) {
+              const seconds = (row.durationMs / 1000).toFixed(1);
+              markdown += `| ${seconds}s | ${row.project} | ${row.file} | ${row.title} |\n`;
+            }
+          }
+
+          fs.writeFileSync('slow-tests-summary.md', markdown);
+          NODE
+
+          {
+            echo "PLAYWRIGHT_SLOW_TESTS<<EOF"
+            cat slow-tests-summary.md
+            echo "EOF"
+          } >> $GITHUB_ENV
+      - name: Display Summary in Workflow Log
+        if: always()
+        run: |
+          SKIPPED_INCL_NOT_RUN=$(( ${PLAYWRIGHT_SKIPPED:-0} + ${PLAYWRIGHT_NOT_RUN:-0} ))
+          echo "--- Playwright Sharded Test Summary ---"
+          echo "Total: $PLAYWRIGHT_TOTAL"
+          echo "Passed: $PLAYWRIGHT_PASSED"
+          echo "Failed: $PLAYWRIGHT_FAILED"
+          echo "Flaky: $PLAYWRIGHT_FLAKY"
+          echo "Skipped (incl. Not Run): $SKIPPED_INCL_NOT_RUN"
+          echo "Not Run (estimated): $PLAYWRIGHT_NOT_RUN"
+          echo "Shards: $PLAYWRIGHT_SHARDS_FOUND/$PLAYWRIGHT_SHARDS_EXPECTED"
+          echo "Duration: $PLAYWRIGHT_DURATION"
+          echo "$PLAYWRIGHT_SLOW_TESTS"
+      - uses: actions/upload-artifact@v4
+        id: upload_playwright_report
+        if: always()
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 90
+      - name: Notify Google Chat
+        if: always()
+        env:
+          WEBHOOK_URL: ${{ secrets.GOOGLE_CHAT_WEBHOOK_URL_REGRESSION }}
+        run: |
+          SKIP_INCL_NOT_RUN=$(( ${PLAYWRIGHT_SKIPPED:-0} + ${PLAYWRIGHT_NOT_RUN:-0} ))
+          WARNING_NOTE=""
+
+          if [ "${PLAYWRIGHT_REPORT_MISSING:-0}" = "1" ]; then
+            WARNING_NOTE="Merged JSON report missing; counts may be incomplete."
+          elif [ "${PLAYWRIGHT_PARTIAL_COUNTS:-0}" = "1" ]; then
+            WARNING_NOTE="Full merged report unavailable; counts are best-effort from available shard blobs."
+          fi
+
+          if [ "${PLAYWRIGHT_NOT_RUN:-0}" -gt 0 ]; then
+            if [ -n "$WARNING_NOTE" ]; then
+              WARNING_NOTE="$WARNING_NOTE Estimated not-run tests: ${PLAYWRIGHT_NOT_RUN}."
+            else
+              WARNING_NOTE="Estimated not-run tests: ${PLAYWRIGHT_NOT_RUN}."
+            fi
+          fi
+
+          # Set Color and Icon
+          if [ "$PLAYWRIGHT_FAILED" -eq 0 ]; then
+            CARD_TITLE="QA Test Passed"
+            ICON_URL="https://fonts.gstatic.com/s/i/short-term/release/googlesymbols/check_circle/default/48px.svg"
+          else
+            CARD_TITLE="QA Test Failed"
+            ICON_URL="https://fonts.gstatic.com/s/i/short-term/release/googlesymbols/error/default/48px.svg"
+          fi
+
+          # Safe formatting: truncate and remove characters that might break the card
+          CLEAN_FAILED_LIST=$(echo "$PLAYWRIGHT_FAILED_LIST" | head -c 2500 | tr -d '\000-\031')
+          CLEAN_SLOW_TESTS=$(echo "$PLAYWRIGHT_SLOW_TESTS" | head -c 1800 | tr -d '\000-\031')
+
+          # Generate Payload using String Interpolation \($var)
+          PAYLOAD=$(jq -n \
+            --arg title "$CARD_TITLE" \
+            --arg subtitle "Repo: ${{ github.repository }}" \
+            --arg icon "$ICON_URL" \
+            --arg pass "$PLAYWRIGHT_PASSED" \
+            --arg fail "$PLAYWRIGHT_FAILED" \
+            --arg flaky "$PLAYWRIGHT_FLAKY" \
+            --arg skip_total "$SKIP_INCL_NOT_RUN" \
+            --arg shards "$PLAYWRIGHT_SHARDS_FOUND/$PLAYWRIGHT_SHARDS_EXPECTED" \
+            --arg pct "$PLAYWRIGHT_PASS_PERCENTAGE%" \
+            --arg dur "$PLAYWRIGHT_DURATION" \
+            --arg warn "$WARNING_NOTE" \
+            --arg logs "$CLEAN_FAILED_LIST" \
+            --arg slow "$CLEAN_SLOW_TESTS" \
+            --arg run_url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            '{
+              cardsV2: [{
+                cardId: "test_report",
+                card: {
+                  header: {
+                    title: $title,
+                    subtitle: $subtitle,
+                    imageUrl: $icon,
+                    imageType: "CIRCLE"
+                  },
+                  sections: [
+                    {
+                      header: "Statistics",
+                      widgets: [
+                        { textParagraph: { text: "<b>Pass Rate:</b> \($pct) | <b>Duration:</b> \($dur)" } },
+                        { textParagraph: { text: "<b>Shards:</b> \($shards)" } },
+                        { textParagraph: { text: "🟢 <b>Passed:</b> \($pass)  🔴 <b>Failed:</b> \($fail)  ⚠️ <b>Flaky:</b> \($flaky)  ⏭️ <b>Skipped (incl. Not Run):</b> \($skip_total)" } },
+                        { textParagraph: { text: (if $warn == "" then "" else "⚠️ <b>Notes:</b> " + $warn end) } }
+                      ]
+                    },
+                    {
+                      header: "Failure Details",
+                      collapsible: true,
+                      uncollapsibleWidgetsCount: 0,
+                      widgets: [
+                        { textParagraph: { text: (if ($fail | tonumber) == 0 then "All tests passed successfully!" else $logs end) } }
+                      ]
+                    },
+                    {
+                      header: "Slowest Tests",
+                      collapsible: true,
+                      uncollapsibleWidgetsCount: 0,
+                      widgets: [
+                        { textParagraph: { text: $slow } }
+                      ]
+                    },
+                    {
+                      widgets: [
+                        {
+                          buttonList: {
+                            buttons: [
+                              {
+                                text: "OPEN WORKFLOW",
+                                onClick: { openLink: { url: $run_url } }
+                              }
+                            ]
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }]
+            }')
+
+          curl -X POST -H 'Content-Type: application/json' -d "$PAYLOAD" "$WEBHOOK_URL"
+      - name: Fail workflow on shard gaps or test failures
+        if: always()
+        run: |
+          SHARDS_JOB_RESULT="${{ needs.UI-Automation-tests.result }}"
+
+          if [ "$PLAYWRIGHT_SHARD_MISSING" = "1" ]; then
+            echo "One or more shard reports are missing: $PLAYWRIGHT_SHARDS_FOUND/$PLAYWRIGHT_SHARDS_EXPECTED"
+            exit 1
+          fi
+
+          if [ "${PLAYWRIGHT_REPORT_MISSING:-0}" = "1" ]; then
+            echo "Merged Playwright JSON report is missing after merge. Unable to compute accurate summary counts."
+            exit 1
+          fi
+
+          if [ "$SHARDS_JOB_RESULT" = "success" ] && [ "$PLAYWRIGHT_TOTAL" -eq 0 ]; then
+            echo "No tests were executed after report merge. Failing workflow."
+            exit 1
+          fi
+
+          if [ "$SHARDS_JOB_RESULT" = "failure" ] && [ "$PLAYWRIGHT_TOTAL" -eq 0 ]; then
+            echo "One or more shard jobs failed before producing merged test results. Check shard job logs."
+            exit 1
+          fi
+
+          if [ "$PLAYWRIGHT_FAILED" -gt 0 ]; then
+            echo "Playwright has $PLAYWRIGHT_FAILED failed test(s). Failing workflow."
+            exit 1
+          fi

@@ -1,0 +1,157 @@
+name: Data Pack Renewal Prep with some negatives
+on:
+  schedule:
+    - cron: "30 23 */2 * *"
+  workflow_dispatch:
+    inputs:
+      target_env:
+        description: "Environment to run"
+        required: true
+        type: choice
+        default: qa
+        options:
+          - qa
+          - dev
+env:
+  UPG_ACCOUNT_EMAIL: ${{ secrets.UPG_ACCOUNT_EMAIL }}
+  UPG_ACCOUNT_PASSWORD: ${{ secrets.UPG_ACCOUNT_PASSWORD }}
+  DB_SERVER: ${{ secrets.DB_SERVER }}
+  DB_HOST_DEV: ${{ secrets.DB_HOST_DEV }}
+  DB_HOST_QA: ${{ secrets.DB_HOST_QA }}
+  DB_USER_DEV: ${{ secrets.DB_USER_DEV }}
+  DB_USER_QA: ${{ secrets.DB_USER_QA }}
+  AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+  AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+  AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+  TARGET_ENV: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.target_env || 'qa' }}
+jobs:
+  ####################################################
+  # 1️⃣ Renewal Prep JOB
+  ####################################################
+  renewal-prep:
+    runs-on: qa-agent-ubuntu
+    timeout-minutes: 180
+    environment: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.target_env || 'qa' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-playwright-
+
+      - name: Install Playwright Browsers
+        run: |
+          wait_for_apt_locks() {
+            local max_wait_seconds=600
+            local waited=0
+
+            while sudo fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || \
+                  sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
+                  sudo fuser /var/cache/apt/archives/lock >/dev/null 2>&1; do
+              if [ "$waited" -ge "$max_wait_seconds" ]; then
+                echo "Timed out waiting for apt/dpkg lock release after ${max_wait_seconds}s."
+                return 1
+              fi
+
+              echo "apt/dpkg lock is busy. Waiting 10s..."
+              sleep 10
+              waited=$((waited + 10))
+            done
+          }
+
+          wait_for_apt_locks
+
+          ATTEMPTS=3
+          for attempt in $(seq 1 "$ATTEMPTS"); do
+            echo "Playwright browser install attempt ${attempt}/${ATTEMPTS}"
+
+            if npx playwright install --with-deps; then
+              echo "Playwright browsers and OS dependencies installed successfully."
+              exit 0
+            else
+              EXIT_CODE=$?
+            fi
+            if [ "$attempt" -lt "$ATTEMPTS" ]; then
+              echo "Install failed with exit code ${EXIT_CODE}. Waiting for apt lock and retrying..."
+              wait_for_apt_locks || exit 1
+              sleep 10
+            else
+              echo "Playwright install failed after ${ATTEMPTS} attempts (last exit code: ${EXIT_CODE})."
+              exit "$EXIT_CODE"
+            fi
+          done
+
+      - name: Ensure Azure CLI is installed
+        run: |
+          if command -v az >/dev/null 2>&1; then
+            echo "Azure CLI already installed."
+            az version --query '"azure-cli"' -o tsv
+            exit 0
+          fi
+
+          echo "Azure CLI not found. Installing..."
+          if ! command -v sudo >/dev/null 2>&1; then
+            echo "sudo is required to install Azure CLI on this runner."
+            exit 1
+          fi
+
+          curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+          az version --query '"azure-cli"' -o tsv
+
+      - name: Azure Login for DB token
+        run: |
+          if az login --identity 1>/dev/null 2>&1; then
+            echo "Azure login succeeded using managed identity."
+            exit 0
+          fi
+
+          echo "Managed identity login unavailable. Falling back to service principal."
+          if [ -z "$AZURE_CLIENT_ID" ] || [ -z "$AZURE_CLIENT_SECRET" ] || [ -z "$AZURE_TENANT_ID" ]; then
+            echo "Missing Azure auth variables required for service principal login."
+            exit 1
+          fi
+
+          az login --service-principal \
+            --username "$AZURE_CLIENT_ID" \
+            --password "$AZURE_CLIENT_SECRET" \
+            --tenant "$AZURE_TENANT_ID" \
+            --allow-no-subscriptions 1>/dev/null
+
+      - name: Prepare DB auth token
+        run: |
+          if [ -n "$DB_ACCESS_TOKEN" ]; then
+            echo "DB access token is already present."
+            exit 0
+          fi
+
+          TOKEN=$(az account get-access-token --resource-type oss-rdbms --query accessToken --output tsv)
+          if [ -z "$TOKEN" ]; then
+            echo "Failed to generate DB access token."
+            exit 1
+          fi
+
+          echo "DB_ACCESS_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+          echo "DB access token generated."
+
+      - name: Run Playwright tests (Renewal Prep)
+        run: ENV=${{ env.TARGET_ENV }} npm run test-data-pack-renewal-prep
+
+      - name: Upload Playwright Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dp-renewal-prep-playwright-report
+          path: playwright-report/
+          retention-days: 90

@@ -1,0 +1,153 @@
+name: Data Pack - AXP Activation of Pending Activation Contracts
+on:
+  schedule:
+    - cron: "30 20 * * *"
+  workflow_dispatch:
+    inputs:
+      target_env:
+        description: "Environment to run"
+        required: true
+        type: choice
+        default: both
+        options:
+          - qa
+          - dev
+          - both
+env:
+  AXP_GLOBAL_EMAIL: ${{ secrets.AXP_GLOBAL_EMAIL }}
+  AXP_GLOBAL_PASSWORD: ${{ secrets.AXP_GLOBAL_PASSWORD }}
+  UPG_ACCOUNT_EMAIL: ${{ secrets.UPG_ACCOUNT_EMAIL }}
+  UPG_ACCOUNT_PASSWORD: ${{ secrets.UPG_ACCOUNT_PASSWORD }}
+  DB_SERVER: ${{ secrets.DB_SERVER }}
+  DB_HOST_DEV: ${{ secrets.DB_HOST_DEV }}
+  DB_HOST_QA: ${{ secrets.DB_HOST_QA }}
+  DB_USER_DEV: ${{ secrets.DB_USER_DEV }}
+  DB_USER_QA: ${{ secrets.DB_USER_QA }}
+jobs:
+  resolve_target_envs:
+    runs-on: ubuntu-latest
+    outputs:
+      target_envs: ${{ steps.set_target_envs.outputs.target_envs }}
+    steps:
+      - name: Resolve target environments
+        id: set_target_envs
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "schedule" ]]; then
+            echo 'target_envs=["qa","dev"]' >> "$GITHUB_OUTPUT"
+          else
+            case "${{ github.event.inputs.target_env }}" in
+              qa)
+                echo 'target_envs=["qa"]' >> "$GITHUB_OUTPUT"
+                ;;
+              dev)
+                echo 'target_envs=["dev"]' >> "$GITHUB_OUTPUT"
+                ;;
+              both)
+                echo 'target_envs=["qa","dev"]' >> "$GITHUB_OUTPUT"
+                ;;
+              *)
+                echo 'target_envs=["qa"]' >> "$GITHUB_OUTPUT"
+                ;;
+            esac
+          fi
+
+  axp-activation:
+    needs: resolve_target_envs
+    runs-on: qa-agent-ubuntu
+    timeout-minutes: 180
+    environment: qa
+    strategy:
+      fail-fast: false
+      matrix:
+        target_env: ${{ fromJson(needs.resolve_target_envs.outputs.target_envs) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+      - name: Install dependencies
+        run: npm ci
+      - name: Ensure Azure CLI is installed
+        run: |
+          if command -v az >/dev/null 2>&1; then
+            echo "Azure CLI already installed."
+            az version --query '"azure-cli"' -o tsv
+            exit 0
+          fi
+
+          echo "Azure CLI not found. Installing..."
+          if ! command -v sudo >/dev/null 2>&1; then
+            echo "sudo is required to install Azure CLI on this runner."
+            exit 1
+          fi
+
+          curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+          az version --query '"azure-cli"' -o tsv
+      - name: Azure Login using Managed Identity
+        run: az login --identity
+      - name: Prepare DB auth token using Managed Identity
+        run: |
+          TOKEN=$(az account get-access-token --resource-type oss-rdbms --query accessToken --output tsv)
+          if [ -z "$TOKEN" ]; then
+            echo "Failed to generate DB access token from managed identity."
+            exit 1
+          fi
+          echo "DB_ACCESS_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+          echo "DB access token generated using managed identity."
+      - name: Install Playwright Browsers
+        run: npx playwright install --with-deps
+      - name: Install Google Chrome for Playwright channel
+        run: |
+          wait_for_apt_locks() {
+            local max_wait_seconds=600
+            local waited=0
+
+            while sudo fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || \
+                  sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
+                  sudo fuser /var/cache/apt/archives/lock >/dev/null 2>&1; do
+              if [ "$waited" -ge "$max_wait_seconds" ]; then
+                echo "Timed out waiting for apt/dpkg lock release after ${max_wait_seconds}s."
+                return 1
+              fi
+
+              echo "apt/dpkg lock is busy before Chrome install. Waiting 10s..."
+              sleep 10
+              waited=$((waited + 10))
+            done
+          }
+
+          wait_for_apt_locks
+
+          ATTEMPTS=3
+          for attempt in $(seq 1 "$ATTEMPTS"); do
+            echo "Chrome install attempt ${attempt}/${ATTEMPTS}"
+
+            if npx playwright install chrome; then
+              echo "Google Chrome channel installed successfully for Playwright."
+              exit 0
+            fi
+
+            EXIT_CODE=$?
+            if [ "$attempt" -lt "$ATTEMPTS" ]; then
+              echo "Chrome install failed with exit code ${EXIT_CODE}. Waiting for apt lock and retrying..."
+              wait_for_apt_locks || exit 1
+              sleep 10
+            else
+              echo "Chrome install failed after ${ATTEMPTS} attempts (last exit code: ${EXIT_CODE})."
+              exit "$EXIT_CODE"
+            fi
+          done
+      - name: Run Playwright tests (AXP Activation)
+        run: ENV=${{ matrix.target_env }} npm run activating-contracts
+        continue-on-error: true
+      - name: Upload Playwright Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: activation-of-contracts-playwright-report-${{ matrix.target_env }}
+          path: playwright-report/
+          retention-days: 90
