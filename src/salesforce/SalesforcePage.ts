@@ -55,8 +55,7 @@ export class SalesforcePage {
     }
 
     async navigateToOrdersUsingOrderID(orderID: string) {
-        // https://trimbledx--feqa1.sandbox.lightning.force.com/lightning/r/Order/801O800003egpP0IAI/view
-        const orderUrl = `https://trimbledx--feqa1.sandbox.lightning.force.com/lightning/r/Order/${orderID}/view`;
+        const orderUrl = ``;
         await this.page.goto(orderUrl);
         console.log('Navigated to Orders page successfully using Order ID');
     }

@@ -23,16 +23,16 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/CorpBusinessSystems/dxp-ui-testing-suite.git"
+    "url": "git+https://github.com/Gopal9797/Playwright-Typescript-E2E-Framework.git"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "bugs": {
-    "url": "https://github.com/CorpBusinessSystems/dxp-ui-testing-suite/issues"
+    "url": "https://github.com/Gopal9797/Playwright-Typescript-E2E-Framework/issues"
   },
-  "homepage": "https://github.com/CorpBusinessSystems/dxp-ui-testing-suite#readme",
+  "homepage": "https://github.com/Gopal9797/Playwright-Typescript-E2E-Framework#readme",
   "devDependencies": {
     "@playwright/test": "^1.51.1",
     "@types/node": "^22.20.1",

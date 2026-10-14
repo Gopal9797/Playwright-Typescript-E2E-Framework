@@ -66,7 +66,7 @@ const fedevActivationAccounts = [
 const activationAccountsToRun = isDevLikeEnvironment
     ? activationAccounts.filter((account) => fedevActivationAccounts.includes(account.label))
     : activationAccounts;
-const axpHost = isDevLikeEnvironment ? 'fedev.accounts.trimble.com' : 'feqa.accounts.trimble.com';
+const axpHost = isDevLikeEnvironment ? '<Dev_URL>' : '<QA_URL>';
 
 test.describe.parallel(`Activate dataPack contracts in AXP`, () => {
     for (const account of activationAccountsToRun) {

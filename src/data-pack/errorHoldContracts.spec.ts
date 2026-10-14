@@ -121,7 +121,7 @@ test.describe.parallel(`Activate PendingActivation contracts in AXP`, () => {
                 test(`Activate contract ${contract_guid}`, async ({ page, loginPage }) => {
                     const workerIndex = Number(process.env.PLAYWRIGHT_WORKER_INDEX || 0);
                     await delay(workerIndex * 500);
-                    await page.goto(`https://feqa.accounts.trimble.com/${account.customerID}/subscriptions`);
+                    await page.goto(``);
                     await loginPage.loginIntoApplication(process.env.AXP_GLOBAL_EMAIL, process.env.AXP_GLOBAL_PASSWORD);
                     console.log(`🔍 Searching for contract to activate: ${contract_guid}`);
                     const contractLocator = page.locator(`xpath=//p[contains(text(),'${contract_guid}')]`);
